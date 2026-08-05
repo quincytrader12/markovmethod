@@ -15,6 +15,7 @@ hmm = ["hmmlearn>=0.3"]
 terminal = ["textual>=0.60", "alpaca-py>=0.20", "keyring>=24"]
 viz = ["matplotlib>=3.7"]
 build = ["pyinstaller>=6"]
+test = ["pytest>=7"]
 
 [project.scripts]
 mamba-terminal = "markov_hedge_fund_method.terminal:main"

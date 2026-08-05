@@ -17,13 +17,30 @@ from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header, RichLog, Static
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Footer,
+    Header,
+    Input,
+    RichLog,
+    Select,
+    Static,
+)
 
-from .broker import make_broker
+from .broker import ReadOnlyError, make_broker
 from .config import Mode, Settings
 from .engine import SnapshotV2, analyze2
 from .markov2 import Strategy
 from .market_data import get_history, synthetic_close
+from .orders import (
+    ORDER_CLASSES,
+    ORDER_TYPES,
+    SIDES,
+    TIFS,
+    OrderTicket,
+    OrderValidationError,
+)
 from .regime import STATES
 
 _STATE_STYLE = {0: "red", 1: "grey70", 2: "green"}  # Bear / Sideways / Bull
@@ -107,7 +124,7 @@ class AccountPanel(Static):
     def show_none(self, reason: str) -> None:
         self.update(Text(reason, style="grey58"))
 
-    def update_account(self, account, position, mode: Mode) -> None:
+    def update_account(self, account, position, mode: Mode, open_orders=None) -> None:
         body = Text()
         badge = {Mode.DASHBOARD: ("DASHBOARD (read-only)", "black on grey70"),
                  Mode.PAPER: ("PAPER", "black on yellow"),
@@ -124,13 +141,56 @@ class AccountPanel(Static):
             body.append(f"{position.unrealized_pl:+,.2f}\n", style=pl_style)
         else:
             body.append("position   flat\n", style="grey58")
+        if open_orders:
+            body.append(f"\nopen orders ({len(open_orders)}):\n", style="bold #c9a227")
+            for o in open_orders[:5]:
+                body.append(f"  {o.side} {o.qty} {o.symbol} {o.type} [{o.status}]\n",
+                            style="grey70")
+            if len(open_orders) > 5:
+                body.append(f"  … +{len(open_orders) - 5} more\n", style="grey58")
         self.update(body)
+
+
+class ExecutionPanel(Vertical):
+    """Manual order entry covering every Alpaca order style.
+
+    The widgets only *collect* a ticket; the App reads them, validates via
+    `orders.build_order_request`, and submits through the gated broker seam.
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Static("⚡ EXECUTION — Alpaca order entry (market · limit · stop · "
+                     "stop-limit · trailing · bracket/oco/oto)", classes="exec-title")
+        with Horizontal(classes="exec-row"):
+            yield Input(placeholder="symbol", id="exec_symbol")
+            yield Select([(s.upper(), s) for s in SIDES], value="buy",
+                         id="exec_side", allow_blank=False)
+            yield Select([(t.replace("_", "-"), t) for t in ORDER_TYPES], value="market",
+                         id="exec_type", allow_blank=False)
+            yield Select([(t.upper(), t) for t in TIFS], value="day",
+                         id="exec_tif", allow_blank=False)
+            yield Select([(c.upper(), c) for c in ORDER_CLASSES], value="simple",
+                         id="exec_class", allow_blank=False)
+        with Horizontal(classes="exec-row"):
+            yield Input(placeholder="qty (shares)", id="exec_qty", type="number")
+            yield Input(placeholder="notional $", id="exec_notional", type="number")
+            yield Input(placeholder="limit px", id="exec_limit", type="number")
+            yield Input(placeholder="stop px", id="exec_stop", type="number")
+            yield Input(placeholder="trail $", id="exec_trailp", type="number")
+            yield Input(placeholder="trail %", id="exec_trailpct", type="number")
+        with Horizontal(classes="exec-row"):
+            yield Input(placeholder="take-profit", id="exec_tp", type="number")
+            yield Input(placeholder="stop-loss stop", id="exec_slstop", type="number")
+            yield Input(placeholder="stop-loss limit", id="exec_sllimit", type="number")
+            yield Checkbox("ext hrs", id="exec_ext")
+            yield Button("Submit", id="exec_submit", variant="success")
+            yield Button("Cancel all", id="exec_cancel", variant="error")
 
 
 class TerminalApp(App):
     CSS = """
     Screen { layout: vertical; }
-    #top { height: 1fr; }
+    #top { height: 1fr; min-height: 10; }
     #left { width: 3fr; }
     #right { width: 2fr; }
     MatrixPanel, Fix1Panel, SignalPanel, AccountPanel {
@@ -138,10 +198,20 @@ class TerminalApp(App):
     }
     Fix1Panel { height: 9; }
     SignalPanel { height: 13; }
-    RichLog { height: 7; border: round #555555; margin: 0 1; }
+    ExecutionPanel {
+        height: auto; border: round #c9a227; margin: 0 1; padding: 0 1;
+    }
+    .exec-title { color: #c9a227; text-style: bold; height: 1; }
+    .exec-row { height: 3; }
+    .exec-row Input, .exec-row Select { width: 1fr; margin: 0 1 0 0; }
+    .exec-row Button { width: auto; margin: 0 0 0 1; }
+    .exec-row Checkbox { width: auto; height: 3; content-align: left middle; }
+    RichLog { height: 6; border: round #555555; margin: 0 1; }
     """
     BINDINGS = [
         ("r", "refresh", "Refresh now"),
+        ("s", "focus_submit", "Order entry"),
+        ("x", "cancel_all", "Cancel all orders"),
         ("q", "quit", "Quit"),
     ]
 
@@ -160,6 +230,7 @@ class TerminalApp(App):
             with Vertical(id="right"):
                 yield SignalPanel(id="signal")
                 yield AccountPanel(id="account")
+        yield ExecutionPanel(id="exec")
         yield RichLog(id="log", markup=True, highlight=True)
         yield Footer()
 
@@ -169,8 +240,17 @@ class TerminalApp(App):
                           f"{self.settings.mode.value}" + (" · DEMO" if self.demo else ""))
         self._log(f"[bold]starting[/] — strategy={self.settings.strategy.value} "
                   f"mode={self.settings.mode.value} {'(offline demo data)' if self.demo else ''}")
+        # Prefill the order-entry symbol with the tracked ticker.
+        self.query_one("#exec_symbol", Input).value = self.settings.ticker
         if self.settings.mode is Mode.DASHBOARD:
             self._log("[grey70]dashboard: target position shown only, no orders will be placed.[/]")
+            self._log("[grey58]order entry is read-only in DASHBOARD — restart with "
+                      "--mode paper to arm the execution panel.[/]")
+        elif self.demo:
+            self._log("[grey58]demo mode: no broker connected — order entry is disabled.[/]")
+        else:
+            self._log(f"[#c9a227]execution armed[/] — {self.settings.mode.value.upper()} "
+                      "orders will be sent to Alpaca. Press 's' to jump to order entry.")
         self.action_refresh()
         self.set_interval(self.settings.poll_seconds, self.action_refresh)
 
@@ -193,16 +273,18 @@ class TerminalApp(App):
             return
 
         account = position = None
+        open_orders = None
         if self.broker is not None:
             try:
                 account = self.broker.get_account()
                 position = self.broker.get_position(self.settings.ticker)
+                open_orders = self.broker.list_open_orders()
             except Exception as exc:  # noqa: BLE001
                 self.call_from_thread(self._log, f"[yellow]broker read failed:[/] {exc}")
 
-        self.call_from_thread(self._apply, snap, account, position)
+        self.call_from_thread(self._apply, snap, account, position, open_orders)
 
-    def _apply(self, snap: SnapshotV2, account, position) -> None:
+    def _apply(self, snap: SnapshotV2, account, position, open_orders=None) -> None:
         self.query_one(MatrixPanel).update_snapshot(snap)
         self.query_one(Fix1Panel).update_snapshot(snap)
         self.query_one(SignalPanel).update_snapshot(snap)
@@ -212,10 +294,105 @@ class TerminalApp(App):
         elif self.broker is None:
             acct.show_none("no Alpaca credentials — data-only mode\n(set ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY)")
         else:
-            acct.update_account(account, position, self.settings.mode)
+            acct.update_account(account, position, self.settings.mode, open_orders)
         vflag = "labels ✓" if snap.verification.passed else "[red]labels ✗[/]"
         self._log(f"[green]updated[/] {snap.ticker}: {snap.current_state_name} → "
                   f"target {snap.target_label} ({vflag})")
+
+    # ── execution panel ─────────────────────────────────────────────────────
+    def action_focus_submit(self) -> None:
+        self.query_one("#exec_symbol", Input).focus()
+
+    def action_cancel_all(self) -> None:
+        self._cancel_all_orders()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "exec_submit":
+            self._submit_from_form()
+        elif event.button.id == "exec_cancel":
+            self._cancel_all_orders()
+
+    def _execution_blocked(self) -> bool:
+        """Log a reason and return True when orders can't be placed right now."""
+        if self.demo or self.broker is None:
+            self._log("[yellow]order entry needs Alpaca credentials — this is data/demo mode.[/]")
+            return True
+        if not self.settings.can_trade:
+            self._log("[yellow]DASHBOARD is read-only — restart with --mode paper to place orders.[/]")
+            return True
+        return False
+
+    def _read_ticket(self) -> OrderTicket:
+        def num(widget_id: str) -> float | None:
+            raw = self.query_one(f"#{widget_id}", Input).value.strip()
+            return float(raw) if raw else None
+
+        symbol = self.query_one("#exec_symbol", Input).value.strip() or self.settings.ticker
+        return OrderTicket(
+            symbol=symbol,
+            side=self.query_one("#exec_side", Select).value,
+            order_type=self.query_one("#exec_type", Select).value,
+            time_in_force=self.query_one("#exec_tif", Select).value,
+            order_class=self.query_one("#exec_class", Select).value,
+            qty=num("exec_qty"),
+            notional=num("exec_notional"),
+            limit_price=num("exec_limit"),
+            stop_price=num("exec_stop"),
+            trail_price=num("exec_trailp"),
+            trail_percent=num("exec_trailpct"),
+            take_profit_limit=num("exec_tp"),
+            stop_loss_stop=num("exec_slstop"),
+            stop_loss_limit=num("exec_sllimit"),
+            extended_hours=self.query_one("#exec_ext", Checkbox).value,
+        )
+
+    def _submit_from_form(self) -> None:
+        if self._execution_blocked():
+            return
+        try:
+            ticket = self._read_ticket()
+        except ValueError:
+            self._log("[red]could not parse a numeric field — check the price/qty inputs.[/]")
+            return
+        self._log(f"[grey58]submitting[/] {ticket.symbol} {ticket.side} {ticket.order_type}…")
+        self._do_submit(ticket)
+
+    @work(exclusive=False, thread=True)
+    def _do_submit(self, ticket: OrderTicket) -> None:
+        try:
+            result = self.broker.submit_ticket(ticket)
+        except OrderValidationError as exc:
+            self.call_from_thread(self._log, f"[yellow]invalid order:[/] {exc}")
+            return
+        except ReadOnlyError as exc:
+            self.call_from_thread(self._log, f"[yellow]{exc}[/]")
+            return
+        except Exception as exc:  # noqa: BLE001 — Alpaca rejection (buying power, hours, …)
+            self.call_from_thread(self._log, f"[red]order rejected:[/] {exc}")
+            return
+        self.call_from_thread(
+            self._log,
+            f"[bold green]order sent[/] {result.summary} → id {result.id} [{result.status}]",
+        )
+        self.call_from_thread(self.action_refresh)
+
+    def _cancel_all_orders(self) -> None:
+        if self._execution_blocked():
+            return
+        self._do_cancel()
+
+    @work(exclusive=False, thread=True)
+    def _do_cancel(self) -> None:
+        try:
+            n = self.broker.cancel_all_orders()
+        except ReadOnlyError as exc:
+            self.call_from_thread(self._log, f"[yellow]{exc}[/]")
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self._log, f"[red]cancel failed:[/] {exc}")
+            return
+        self.call_from_thread(self._log, f"[green]cancel requested[/] for {n} open order(s).")
+        self.call_from_thread(self.action_refresh)
 
     def _log(self, message: str) -> None:
         self.query_one(RichLog).write(message)

@@ -127,6 +127,42 @@ away rather than accidentally on. Keys are read from the environment or OS
 keychain — never bundled into the binary. Install the extra with
 `pip install -e ".[terminal]"` (add `viz` for the proof charts).
 
+### Execution panel — manual order entry
+
+The bottom of the terminal is a live **execution panel** that submits real
+orders through the gated broker seam, covering the **full Alpaca order
+taxonomy**:
+
+| Field | Choices |
+| --- | --- |
+| **Type** | `market` · `limit` · `stop` · `stop_limit` · `trailing_stop` |
+| **Class** | `simple` · `bracket` · `oco` · `oto` |
+| **Time-in-force** | `day` · `gtc` · `opg` · `cls` · `ioc` · `fok` |
+| **Side** | `buy` · `sell` |
+| **Sizing** | `qty` (fractional shares) or `notional` ($, market/day only) |
+| **Prices** | limit, stop, trailing (`$` or `%`), take-profit + stop-loss legs |
+| **Flags** | extended-hours (limit orders) |
+
+Fill the row, press **Submit** (or `s` to jump to the form); **Cancel all**
+(or `x`) cancels every open order. Tickets are validated *before* they leave
+the terminal — a bad combination (e.g. a limit order with no price, or a
+notional bracket) is rejected with a plain-English reason in the log, so only
+well-formed requests reach Alpaca. The panel is **inert in `dashboard`/demo
+mode** and only arms under `--mode paper` or `--mode live`. Open orders are
+listed in the account panel and refresh after every submit/cancel.
+
+### Tests
+
+```bash
+pip install -e ".[terminal,test]"
+pytest -q        # order-taxonomy + execution-panel wiring (headless Textual)
+```
+
+`tests/test_orders.py` builds every order type/class/TIF against the real
+alpaca-py request classes; `tests/test_execution_panel.py` drives the TUI
+headlessly with a fake broker to prove the panel collects a ticket, validates
+it, and submits through the gated seam.
+
 ## TradingView indicator
 
 `tradingview/markov_regime.pine` is a Pine v5 overlay that recreates the same
@@ -151,10 +187,14 @@ TradingView Pine Editor and add it to a chart (BTCUSDT daily is a good start).
 │   ├── engine.py                    # pure close-series -> Snapshot / SnapshotV2
 │   ├── market_data.py               # Alpaca / yfinance / synthetic price sources
 │   ├── config.py                    # Settings, execution Mode, Strategy, key handling
-│   ├── broker.py                    # gated Alpaca execution seam
-│   ├── tui.py                       # Textual dashboard
+│   ├── broker.py                    # gated Alpaca execution seam (submit/cancel/list)
+│   ├── orders.py                    # OrderTicket -> alpaca-py request (full taxonomy)
+│   ├── tui.py                       # Textual dashboard + execution panel
 │   ├── terminal.py                  # `mamba-terminal` entry point
 │   └── proof.py                     # `markov-proof` before/after figure + metrics
+├── tests/
+│   ├── test_orders.py               # every order type/class/TIF builds correctly
+│   └── test_execution_panel.py      # headless TUI wiring (fake broker)
 └── tradingview/
     └── markov_regime.pine           # Pine v5 on-chart companion
 ```

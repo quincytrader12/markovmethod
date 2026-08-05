@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .config import Mode, Settings
+from .orders import OrderTicket, build_order_request, describe
 
 
 @dataclass
@@ -33,6 +34,23 @@ class Position:
     market_value: float
     unrealized_pl: float
     side: str  # "long" / "short"
+
+
+@dataclass
+class OpenOrder:
+    id: str
+    symbol: str
+    side: str
+    type: str
+    qty: str
+    status: str
+
+
+@dataclass
+class OrderResult:
+    id: str
+    status: str
+    summary: str
 
 
 class ReadOnlyError(RuntimeError):
@@ -126,6 +144,56 @@ class AlpacaBroker:
         )
         submitted = self.client.submit_order(order)
         return f"{side.value} {symbol} ~${notional:,.0f} (order {submitted.id})"
+
+    # ── manual execution panel: full order taxonomy ─────────────────────────
+    def submit_ticket(self, ticket: OrderTicket) -> OrderResult:
+        """Submit any order style (market/limit/stop/stop_limit/trailing_stop,
+        simple/bracket/oco/oto). Gated by mode exactly like the auto-trade seam.
+
+        The request is fully validated and constructed before this point, so a
+        rejection here comes from Alpaca (buying power, market hours, etc.), not
+        from a malformed ticket.
+        """
+        if not self.settings.can_trade:
+            raise ReadOnlyError(
+                f"Mode is {self.settings.mode.value.upper()} — order placement is disabled. "
+                "Restart with --mode paper (or live) to enable order entry."
+            )
+        request = build_order_request(ticket)  # raises OrderValidationError on bad input
+        submitted = self.client.submit_order(request)
+        return OrderResult(
+            id=str(submitted.id),
+            status=str(getattr(submitted, "status", "accepted")),
+            summary=describe(ticket),
+        )
+
+    def list_open_orders(self) -> list[OpenOrder]:
+        from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.requests import GetOrdersRequest
+
+        orders = self.client.get_orders(
+            filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, nested=True)
+        )
+        out: list[OpenOrder] = []
+        for o in orders:
+            out.append(OpenOrder(
+                id=str(o.id),
+                symbol=str(o.symbol),
+                side=str(getattr(o.side, "value", o.side)),
+                type=str(getattr(o.type, "value", o.type)),
+                qty=str(o.qty if o.qty is not None else f"${o.notional}"),
+                status=str(getattr(o.status, "value", o.status)),
+            ))
+        return out
+
+    def cancel_all_orders(self) -> int:
+        """Cancel every open order. Returns how many cancels were requested."""
+        if not self.settings.can_trade:
+            raise ReadOnlyError(
+                f"Mode is {self.settings.mode.value.upper()} — cancelling is disabled."
+            )
+        responses = self.client.cancel_orders()
+        return len(responses) if responses is not None else 0
 
 
 def make_broker(settings: Settings) -> AlpacaBroker | None:
