@@ -105,7 +105,28 @@ markov-proof --demo --image proof.png     # offline synthetic demo
 > "Backtests flatter. The fixed matrix shows uglier, truer numbers — those are
 > the only ones worth trading."
 
-## Mamba Terminal (Alpaca)
+## Mamba Terminal — Web HUD (`mamba-web`)
+
+A neon, sci-fi **web dashboard** served by a local Python backend — the price
+chart with a Bull/Bear/Sideways **regime ribbon**, MA20/MA50, momentum + RSI
+oscillators, a **Greed/Fear gauge**, the honest transition matrix, a full
+**order-entry panel** (every Alpaca order type), and the **multi-account**
+switcher — all fed by the same Markov engine as the CLI.
+
+```bash
+pip install -e ".[web]"
+mamba-web --demo                     # offline synthetic data, opens the browser
+mamba-web --account swing --mode paper   # live data + a saved account, paper trading
+mamba-web --port 8765 --no-browser   # serve only; open http://127.0.0.1:8765 yourself
+```
+
+The exe (`mamba-web.exe`) starts a local server on `127.0.0.1` and opens your
+browser — nothing is exposed to the network. The page talks to a small JSON API
+(`/api/state`, `/api/portfolio`, `/api/orders`, `/api/accounts`), so the HUD and
+the terminal share one brain. Orders and account switching go through the exact
+same gated broker seam and keychain-backed account store as the TUI.
+
+## Mamba Terminal — TUI (`mamba-terminal`)
 
 A Textual TUI dashboard that runs the 2.0 model live and shows the honest
 matrix, the Fix-1 comparison, the Fix-2 verification badge, the signal, and
@@ -224,12 +245,16 @@ TradingView Pine Editor and add it to a chart (BTCUSDT daily is a good start).
 │   ├── accounts.py                  # named multi-account profiles (keychain-backed)
 │   ├── tui.py                       # Textual dashboard + execution + accounts screen
 │   ├── terminal.py                  # `mamba-terminal` entry point
+│   ├── web.py                       # `mamba-web` FastAPI backend + launcher
+│   ├── webstate.py                  # close series -> HUD JSON (chart, greed/fear, matrix)
+│   ├── web_static/index.html        # the neon web HUD (self-contained page)
 │   └── proof.py                     # `markov-proof` before/after figure + metrics
 ├── tests/
 │   ├── test_orders.py               # every order type/class/TIF builds correctly
 │   ├── test_execution_panel.py      # headless TUI wiring (fake broker)
 │   ├── test_accounts.py             # multi-account store (fake keyring)
-│   └── test_accounts_tui.py         # accounts screen + live switching
+│   ├── test_accounts_tui.py         # accounts screen + live switching
+│   └── test_web.py                  # FastAPI endpoints (state/orders/accounts)
 └── tradingview/
     └── markov_regime.pine           # Pine v5 on-chart companion
 ```

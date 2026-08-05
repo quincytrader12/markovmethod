@@ -48,7 +48,10 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["matplotlib", "tkinter", "PyQt5", "PySide6", "IPython", "pytest"],
+    # Web-only deps (used only by web.py's lazy imports) stay out of the TUI exe.
+    # pydantic/anyio are NOT excluded — alpaca-py depends on them.
+    excludes=["matplotlib", "tkinter", "PyQt5", "PySide6", "IPython", "pytest",
+              "fastapi", "uvicorn", "starlette"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

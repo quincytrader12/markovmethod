@@ -78,7 +78,9 @@ def _load_keys() -> tuple[str | None, str | None]:
         import keyring  # optional dependency
         key = key or keyring.get_password(SERVICE, "api_key_id")
         sec = sec or keyring.get_password(SERVICE, "api_secret_key")
-    except Exception:
+    except BaseException:  # noqa: BLE001 — a broken keyring backend can panic
+        # Missing/misconfigured keychain must never crash startup — degrade to
+        # "no stored keys" and let the user connect an account from the UI.
         pass
     return key, sec
 
@@ -96,7 +98,7 @@ def load_settings(account: str | None = None, **overrides) -> Settings:
     try:
         from .accounts import AccountStore
         resolved = AccountStore().resolve(account)
-    except Exception:  # noqa: BLE001 — accounts are optional; fall back to legacy
+    except BaseException:  # noqa: BLE001 — accounts optional; keyring may panic
         resolved = None
     if resolved is not None:
         key, sec = resolved.key_id, resolved.secret
