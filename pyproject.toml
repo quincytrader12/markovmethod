@@ -1,0 +1,22 @@
+[project]
+name = "markov-hedge-fund-method"
+version = "0.1.0"
+description = "Observable Markov regime model with optional HMM layer"
+requires-python = "==3.12.*"
+dependencies = [
+    "yfinance>=0.2",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "scikit-learn>=1.4",
+]
+
+[project.optional-dependencies]
+hmm = ["hmmlearn>=0.3"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["markov_hedge_fund_method*"]
