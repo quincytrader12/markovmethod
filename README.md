@@ -71,6 +71,62 @@ transition matrix with its persistence diagonal, the stationary distribution,
 and the walk-forward Sharpe + max drawdown. If `hmmlearn` is installed it also
 prints the HMM regime mean returns.
 
+## Markov 2.0 — the three corrections
+
+The observable model above is v1. `markov2.py` layers on three documented
+fixes, and the live terminal uses them by default.
+
+**Fix 1 — stride sampling (the autocorrelation flaw).** Labels come from a
+20-day *rolling* return, so consecutive days share 19 of 20 days — counting
+day-to-day transitions manufactures persistence on the diagonal. v2 builds
+*both* matrices: the legacy overlapping one **and** a stride-sampled
+(non-overlapping, stride = window) one, and shows them side by side. Only the
+stride-sampled matrix is statistically honest. In practice the fake diagonal
+runs ~90% while the true one is ~40% — a ~50-point illusion.
+
+**Fix 2 — label verification.** Before any matrix/chart renders,
+`verify_labels` checks the mapping against the data's own extremes: the
+highest-return window must be Bull, the lowest Bear, the flattest Sideways. A
+swapped Bull/Bear display fails this check instead of shipping.
+
+**Fix 3 — two explicit modes.**
+- **FILTER** (default): the regime *gates* a strategy — long only when the
+  signal clears `+threshold`, short below `−threshold`, flat in chop.
+- **STANDALONE**: trade the signal directly, position sized to `|signal|` up
+  to a cap.
+
+Generate the before/after proof (equity curves + the persistence bars):
+
+```bash
+markov-proof --ticker SPY                 # real data (needs network)
+markov-proof --demo --image proof.png     # offline synthetic demo
+```
+
+> "Backtests flatter. The fixed matrix shows uglier, truer numbers — those are
+> the only ones worth trading."
+
+## Live terminal (Alpaca)
+
+A Textual TUI dashboard that runs the 2.0 model live and shows the honest
+matrix, the Fix-1 comparison, the Fix-2 verification badge, the signal, and
+the target position — plus your Alpaca account/positions when connected.
+
+```bash
+markov-terminal --ticker SPY                    # dashboard, read-only
+markov-terminal --ticker AAPL --demo            # offline synthetic data
+markov-terminal --ticker SPY --strategy standalone
+markov-terminal --mode paper                    # paper auto-trade (needs keys)
+markov-terminal --save-keys <KEY_ID> <SECRET>   # store keys in the OS keychain
+```
+
+**Execution is gated by mode.** `dashboard` (default) is read-only and never
+places an order — it shows the *target* position only. `paper` and `live`
+route the exact same logic through the broker seam (`broker.py`); the order
+method is a hard error in dashboard mode, so trading is genuinely one flag
+away rather than accidentally on. Keys are read from the environment or OS
+keychain — never bundled into the binary. Install the extra with
+`pip install -e ".[terminal]"` (add `viz` for the proof charts).
+
 ## TradingView indicator
 
 `tradingview/markov_regime.pine` is a Pine v5 overlay that recreates the same
@@ -88,9 +144,17 @@ TradingView Pine Editor and add it to a chart (BTCUSDT daily is a good start).
 ├── install.sh                       # macOS / Linux installer
 ├── markov_hedge_fund_method/
 │   ├── __init__.py
-│   ├── regime.py                    # labels, transition matrix, stationary, backtest
+│   ├── regime.py                    # v1: labels, transition matrix (+stride), stationary, backtest
+│   ├── markov2.py                   # 2.0: stride comparison, label verification, modes, metrics
 │   ├── hmm_extension.py             # optional Gaussian HMM (lazy hmmlearn import)
-│   └── run.py                       # CLI entry point
+│   ├── run.py                       # v1 CLI entry point
+│   ├── engine.py                    # pure close-series -> Snapshot / SnapshotV2
+│   ├── market_data.py               # Alpaca / yfinance / synthetic price sources
+│   ├── config.py                    # Settings, execution Mode, Strategy, key handling
+│   ├── broker.py                    # gated Alpaca execution seam
+│   ├── tui.py                       # Textual dashboard
+│   ├── terminal.py                  # `markov-terminal` entry point
+│   └── proof.py                     # `markov-proof` before/after figure + metrics
 └── tradingview/
     └── markov_regime.pine           # Pine v5 on-chart companion
 ```

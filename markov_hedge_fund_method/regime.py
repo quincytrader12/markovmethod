@@ -27,11 +27,24 @@ def label_regimes(close: pd.Series, window: int = 20, threshold: float = 0.02) -
     return labels.dropna()
 
 
-def build_transition_matrix(labels: pd.Series) -> np.ndarray:
-    """MLE estimate of the 3x3 transition matrix from a sequence of labels."""
+def build_transition_matrix(labels: pd.Series, stride: int = 1) -> np.ndarray:
+    """MLE estimate of the 3x3 transition matrix from a sequence of labels.
+
+    `stride` controls the sampling of the label sequence before counting:
+
+      stride == 1        legacy / overlapping. Counts day-to-day transitions.
+                         When labels come from an N-day *rolling* return,
+                         consecutive labels share N-1 days of data, which
+                         inflates the diagonal (fake persistence). See
+                         markov2.py — this is the flaw Fix 1 corrects.
+
+      stride == window   non-overlapping. Samples labels window-days apart so
+                         adjacent observations share no data. Statistically
+                         honest, at the cost of ~window× fewer transitions.
+    """
     n = 3
     counts = np.zeros((n, n), dtype=float)
-    arr = labels.to_numpy()
+    arr = labels.to_numpy()[:: max(1, stride)]
     for i in range(len(arr) - 1):
         counts[arr[i], arr[i + 1]] += 1
     row_sums = counts.sum(axis=1, keepdims=True)

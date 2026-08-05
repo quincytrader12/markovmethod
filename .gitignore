@@ -4,3 +4,7 @@ __pycache__/
 .hmm_available
 *.egg-info/
 uv.lock
+# generated artifacts
+scratch_*
+markov_proof.png
+*.svg

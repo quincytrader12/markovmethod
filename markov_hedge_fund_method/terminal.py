@@ -15,6 +15,7 @@ import argparse
 import sys
 
 from .config import Mode, load_settings, save_keys
+from .markov2 import Strategy
 
 
 def main() -> int:
@@ -24,6 +25,12 @@ def main() -> int:
     parser.add_argument("--window", type=int, default=20)
     parser.add_argument("--threshold", type=float, default=0.02)
     parser.add_argument("--mode", choices=[m.value for m in Mode], default=Mode.DASHBOARD.value)
+    parser.add_argument("--strategy", choices=[s.value for s in Strategy], default=Strategy.FILTER.value,
+                        help="filter = regime gates a strategy; standalone = trade the signal directly")
+    parser.add_argument("--signal-threshold", type=float, default=0.15, dest="signal_threshold",
+                        help="FILTER: |signal| must clear this to act")
+    parser.add_argument("--cap", type=float, default=1.0, dest="size_cap",
+                        help="STANDALONE: max |position|")
     parser.add_argument("--poll", type=int, default=60, dest="poll_seconds",
                         help="Seconds between refreshes")
     parser.add_argument("--demo", action="store_true",
@@ -43,6 +50,9 @@ def main() -> int:
         window=args.window,
         threshold=args.threshold,
         mode=Mode(args.mode),
+        strategy=Strategy(args.strategy),
+        signal_threshold=args.signal_threshold,
+        size_cap=args.size_cap,
         poll_seconds=args.poll_seconds,
     )
 

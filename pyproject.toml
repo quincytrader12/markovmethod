@@ -13,10 +13,12 @@ dependencies = [
 [project.optional-dependencies]
 hmm = ["hmmlearn>=0.3"]
 terminal = ["textual>=0.60", "alpaca-py>=0.20", "keyring>=24"]
+viz = ["matplotlib>=3.7"]
 build = ["pyinstaller>=6"]
 
 [project.scripts]
 markov-terminal = "markov_hedge_fund_method.terminal:main"
+markov-proof = "markov_hedge_fund_method.proof:main"
 
 [build-system]
 requires = ["setuptools>=68"]

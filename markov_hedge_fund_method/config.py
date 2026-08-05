@@ -17,6 +17,8 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 
+from .markov2 import Strategy
+
 SERVICE = "markov-hedge-fund-method"
 
 
@@ -36,6 +38,11 @@ class Settings:
     poll_seconds: int = 60
     # Fraction of buying power to deploy per side when auto-trading is enabled.
     target_notional_pct: float = 0.10
+    # Markov 2.0 — Fix 3: how the signal becomes a position.
+    strategy: Strategy = Strategy.FILTER
+    signal_threshold: float = 0.15   # FILTER: |signal| must clear this to act
+    size_cap: float = 1.0            # STANDALONE: max |position|
+    size_scale: float = 0.5          # STANDALONE: signal/scale before the cap
     api_key: str | None = None
     api_secret: str | None = None
 
