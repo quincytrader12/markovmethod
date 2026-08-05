@@ -6,7 +6,7 @@ description: Observable Markov regime model for any ticker. Builds the transitio
 # markov-hedge-fund-method
 
 Install location: `~/.claude/skills/markov-hedge-fund-method/`.
-Author of the underlying framework: Roan (@RohOnChain). Installed as a Claude Code skill by Lewis Jackson.
+Author: Quincy Gininda. Installed as a Claude Code skill.
 
 ## Invocation
 

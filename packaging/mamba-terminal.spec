@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for the markov-terminal Windows executable.
+"""PyInstaller spec for the mamba-terminal Windows executable.
 
 Built in CI (`.github/workflows/build-windows.yml`) on a windows-latest
-runner:  pyinstaller --clean --noconfirm packaging/markov-terminal.spec
+runner:  pyinstaller --clean --noconfirm packaging/mamba-terminal.spec
 
 The tricky dependencies (textual ships .tcss data files; alpaca / yfinance /
 keyring import submodules dynamically) are pulled in wholesale via
@@ -59,7 +59,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="markov-terminal",
+    name="mamba-terminal",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

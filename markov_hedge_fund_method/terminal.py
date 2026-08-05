@@ -1,9 +1,9 @@
-"""Entry point for the terminal app (`markov-terminal`).
+"""Entry point for the Mamba Terminal app (`mamba-terminal`).
 
-    markov-terminal --ticker SPY                 # dashboard, data-only or Alpaca-backed
-    markov-terminal --ticker AAPL --demo         # offline synthetic data, no network
-    markov-terminal --ticker SPY --mode paper    # enable paper auto-trading (needs keys)
-    markov-terminal --save-keys KEYID SECRET     # store Alpaca keys in the OS keychain
+    mamba-terminal --ticker SPY                 # dashboard, data-only or Alpaca-backed
+    mamba-terminal --ticker AAPL --demo         # offline synthetic data, no network
+    mamba-terminal --ticker SPY --mode paper    # enable paper auto-trading (needs keys)
+    mamba-terminal --save-keys KEYID SECRET     # store Alpaca keys in the OS keychain
 
 Mode is the safety gate. It defaults to `dashboard` (read-only); `paper` and
 `live` require credentials and are the only modes that can place orders.
@@ -19,7 +19,7 @@ from .markov2 import Strategy
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="markov-terminal")
+    parser = argparse.ArgumentParser(prog="mamba-terminal")
     parser.add_argument("--ticker", default="SPY")
     parser.add_argument("--years", type=int, default=10)
     parser.add_argument("--window", type=int, default=20)
@@ -60,7 +60,7 @@ def main() -> int:
         print(
             f"Mode '{settings.mode.value}' needs Alpaca credentials, but none were found.\n"
             "Set ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY, or run:\n"
-            "  markov-terminal --save-keys <KEY_ID> <SECRET>",
+            "  mamba-terminal --save-keys <KEY_ID> <SECRET>",
             file=sys.stderr,
         )
         return 2

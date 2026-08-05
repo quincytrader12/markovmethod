@@ -143,8 +143,8 @@ def main() -> int:
         print("\nHMM extension skipped (optional); observable Markov model installed successfully.")
 
     print("\n----------------------------------------------------------------")
-    print(" Framework: Roan (@RohOnChain). Installed as a Claude Code skill")
-    print(" by Lewis Jackson. Backtests are historical, not forward-looking.")
+    print(" Author: Quincy Gininda. Installed as a Claude Code skill.")
+    print(" Backtests are historical, not forward-looking.")
     print("----------------------------------------------------------------\n")
     return 0
 

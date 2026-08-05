@@ -16,7 +16,7 @@ The Python module:
   If `hmmlearn` can't compile (e.g. Windows without MSVC build tools), the HMM
   layer is skipped cleanly and the observable model still works.
 
-> Framework: **Roan (@RohOnChain)**. Packaged as a Claude Code skill by Lewis Jackson.
+> Author: **Quincy Gininda**. Packaged as a Claude Code skill.
 > Backtests are historical, not forward-looking.
 
 ## Install as a Claude Code skill
@@ -105,18 +105,18 @@ markov-proof --demo --image proof.png     # offline synthetic demo
 > "Backtests flatter. The fixed matrix shows uglier, truer numbers — those are
 > the only ones worth trading."
 
-## Live terminal (Alpaca)
+## Mamba Terminal (Alpaca)
 
 A Textual TUI dashboard that runs the 2.0 model live and shows the honest
 matrix, the Fix-1 comparison, the Fix-2 verification badge, the signal, and
 the target position — plus your Alpaca account/positions when connected.
 
 ```bash
-markov-terminal --ticker SPY                    # dashboard, read-only
-markov-terminal --ticker AAPL --demo            # offline synthetic data
-markov-terminal --ticker SPY --strategy standalone
-markov-terminal --mode paper                    # paper auto-trade (needs keys)
-markov-terminal --save-keys <KEY_ID> <SECRET>   # store keys in the OS keychain
+mamba-terminal --ticker SPY                    # dashboard, read-only
+mamba-terminal --ticker AAPL --demo            # offline synthetic data
+mamba-terminal --ticker SPY --strategy standalone
+mamba-terminal --mode paper                    # paper auto-trade (needs keys)
+mamba-terminal --save-keys <KEY_ID> <SECRET>   # store keys in the OS keychain
 ```
 
 **Execution is gated by mode.** `dashboard` (default) is read-only and never
@@ -153,7 +153,7 @@ TradingView Pine Editor and add it to a chart (BTCUSDT daily is a good start).
 │   ├── config.py                    # Settings, execution Mode, Strategy, key handling
 │   ├── broker.py                    # gated Alpaca execution seam
 │   ├── tui.py                       # Textual dashboard
-│   ├── terminal.py                  # `markov-terminal` entry point
+│   ├── terminal.py                  # `mamba-terminal` entry point
 │   └── proof.py                     # `markov-proof` before/after figure + metrics
 └── tradingview/
     └── markov_regime.pine           # Pine v5 on-chart companion

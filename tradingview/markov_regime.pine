@@ -7,9 +7,8 @@
 // builds the 3x3 transition matrix and stationary distribution from visible
 // chart history and prints both as corner tables.
 //
-// Author: Lewis Jackson · Framework: Roan (@RohOnChain)
-// Companion video: youtube.com/@lewisjackson
-// REPO: github.com/jackson-video-resources/markov-hedge-fund-method
+// Author: Quincy Gininda
+// REPO: github.com/quincytrader12/markovmethod
 //
 // USAGE — load on BTCUSDT daily. Adjust thresholds to taste. Defaults are 20-bar
 // lookback, +/-5% thresholds. The diagonal of the transition matrix (persistence)
@@ -24,7 +23,7 @@
 //   - Stationary distribution converges by 50 iterations on real BTC data and
 //     sums to 1.0 (+/-0.001). Reduce stationary_power if performance lags.
 //
-// PALETTE (matches Roan storyboard — hsl(150,38%,64%) / hsl(354,48%,64%) /
+// PALETTE (desaturated storyboard — hsl(150,38%,64%) / hsl(354,48%,64%) /
 // hsl(220,14%,68%) — desaturated muted tints, never neon):
 //   Bull    : rgb(132,187,161) — soft green
 //   Bear    : rgb(197,127,134) — muted rose

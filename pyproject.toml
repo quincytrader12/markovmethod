@@ -17,7 +17,7 @@ viz = ["matplotlib>=3.7"]
 build = ["pyinstaller>=6"]
 
 [project.scripts]
-markov-terminal = "markov_hedge_fund_method.terminal:main"
+mamba-terminal = "markov_hedge_fund_method.terminal:main"
 markov-proof = "markov_hedge_fund_method.proof:main"
 
 [build-system]

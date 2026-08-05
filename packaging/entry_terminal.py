@@ -1,4 +1,4 @@
-"""PyInstaller entry point for the markov-terminal executable."""
+"""PyInstaller entry point for the mamba-terminal executable."""
 
 import sys
 

@@ -27,21 +27,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install ".[terminal,build]"
 
-      - name: Build markov-terminal.exe
-        run: pyinstaller --clean --noconfirm packaging/markov-terminal.spec
+      - name: Build mamba-terminal.exe
+        run: pyinstaller --clean --noconfirm packaging/mamba-terminal.spec
 
       - name: Smoke test the executable
-        run: ./dist/markov-terminal.exe --help
+        run: ./dist/mamba-terminal.exe --help
 
       - name: Upload exe artifact
         uses: actions/upload-artifact@v4
         with:
-          name: markov-terminal-windows
-          path: dist/markov-terminal.exe
+          name: mamba-terminal-windows
+          path: dist/mamba-terminal.exe
           if-no-files-found: error
 
       - name: Attach exe to release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/markov-terminal.exe
+          files: dist/mamba-terminal.exe

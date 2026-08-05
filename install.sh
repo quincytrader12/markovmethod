@@ -9,7 +9,7 @@
 # Idempotent: an existing install is backed up (never deleted) before a fresh
 # copy is laid down, so the script is safe to re-run after an interruption.
 #
-# Framework: Roan (@RohOnChain). Packaged as a Claude Code skill by Lewis Jackson.
+# Author: Quincy Gininda. Packaged as a Claude Code skill.
 # =============================================================================
 set -euo pipefail
 
@@ -96,7 +96,7 @@ cat <<EOF
    • run the markov-hedge-fund-method skill on BTC-USD with a 60-day lookback
    • fit the HMM on QQQ
 
- Framework: Roan (@RohOnChain). Packaged as a Claude Code skill by Lewis Jackson.
+ Author: Quincy Gininda. Packaged as a Claude Code skill.
  Backtests are historical, not forward-looking.
 ================================================================
 EOF

@@ -164,7 +164,7 @@ class TerminalApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.title = "markov 2.0 — hedge fund terminal"
+        self.title = "Mamba Terminal — by Quincy Gininda"
         self.sub_title = (f"{self.settings.ticker} · {self.settings.strategy.value} · "
                           f"{self.settings.mode.value}" + (" · DEMO" if self.demo else ""))
         self._log(f"[bold]starting[/] — strategy={self.settings.strategy.value} "
