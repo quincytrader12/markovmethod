@@ -55,6 +55,13 @@ def _run(coro):
     asyncio.run(coro)
 
 
+async def _until(pilot, cond, tries=100):
+    for _ in range(tries):
+        if cond():
+            return
+        await pilot.pause()
+
+
 def test_submit_market_order_reaches_broker(monkeypatch):
     app = _make_app(Mode.PAPER, monkeypatch)
 
@@ -63,8 +70,7 @@ def test_submit_market_order_reaches_broker(monkeypatch):
             app.query_one("#exec_type", Select).value = "market"
             app.query_one("#exec_qty", Input).value = "5"
             await pilot.click("#exec_submit")
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+            await _until(pilot, lambda: bool(app.broker.submitted))
 
     _run(scenario())
     assert len(app.broker.submitted) == 1
@@ -87,8 +93,7 @@ def test_submit_bracket_order_builds_legs(monkeypatch):
             app.query_one("#exec_tp", Input).value = "110"
             app.query_one("#exec_slstop", Input).value = "95"
             await pilot.click("#exec_submit")
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+            await _until(pilot, lambda: bool(app.broker.submitted))
 
     _run(scenario())
     assert len(app.broker.submitted) == 1
@@ -104,8 +109,7 @@ def test_cancel_all_reaches_broker(monkeypatch):
     async def scenario():
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.click("#exec_cancel")
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+            await _until(pilot, lambda: app.broker.cancelled > 0)
 
     _run(scenario())
     assert app.broker.cancelled == 1
@@ -118,8 +122,8 @@ def test_dashboard_mode_blocks_submission(monkeypatch):
         async with app.run_test(size=(140, 45)) as pilot:
             app.query_one("#exec_qty", Input).value = "5"
             await pilot.click("#exec_submit")
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+            for _ in range(20):
+                await pilot.pause()
 
     _run(scenario())
     assert app.broker.submitted == []  # read-only mode never reached the broker
@@ -134,8 +138,8 @@ def test_invalid_ticket_does_not_reach_broker(monkeypatch):
             app.query_one("#exec_type", Select).value = "limit"
             app.query_one("#exec_qty", Input).value = "5"
             await pilot.click("#exec_submit")
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+            for _ in range(20):
+                await pilot.pause()
 
     _run(scenario())
     assert app.broker.submitted == []

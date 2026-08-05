@@ -17,6 +17,7 @@ from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     Checkbox,
@@ -28,6 +29,7 @@ from textual.widgets import (
     Static,
 )
 
+from .accounts import AccountStore, KeyringUnavailable
 from .broker import ReadOnlyError, make_broker
 from .config import Mode, Settings
 from .engine import SnapshotV2, analyze2
@@ -124,12 +126,22 @@ class AccountPanel(Static):
     def show_none(self, reason: str) -> None:
         self.update(Text(reason, style="grey58"))
 
-    def update_account(self, account, position, mode: Mode, open_orders=None) -> None:
+    def update_account(self, account, position, mode: Mode, open_orders=None,
+                       account_name=None, account_paper=None) -> None:
         body = Text()
         badge = {Mode.DASHBOARD: ("DASHBOARD (read-only)", "black on grey70"),
                  Mode.PAPER: ("PAPER", "black on yellow"),
                  Mode.LIVE: ("LIVE — REAL MONEY", "bold white on red")}[mode]
-        body.append(" " + badge[0] + " \n\n", style=badge[1])
+        body.append(" " + badge[0] + " \n", style=badge[1])
+        if account_name:
+            endpoint = "paper" if account_paper else "live"
+            body.append("account  ", style="grey58")
+            body.append(f"{account_name} ", style="bold #84bba1")
+            body.append(f"[{endpoint}]  ", style="yellow" if account_paper else "bold red")
+            body.append("press 'a' to switch\n", style="grey58")
+        else:
+            body.append("account  none · press 'a' to connect\n", style="grey58")
+        body.append("\n")
         if account is not None:
             body.append(f"equity        {account.equity:,.2f}\n")
             body.append(f"cash          {account.cash:,.2f}\n")
@@ -187,6 +199,121 @@ class ExecutionPanel(Vertical):
             yield Button("Cancel all", id="exec_cancel", variant="error")
 
 
+class AccountsScreen(ModalScreen):
+    """Manage multiple Alpaca account profiles and switch the active one.
+
+    Reads/writes through the app's AccountStore; switching rebuilds the live
+    broker so different portfolios can be traded from one terminal.
+    """
+
+    BINDINGS = [("escape", "close", "Close")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="acct-box"):
+            yield Static("👤 ACCOUNTS — connect multiple portfolios", classes="acct-title")
+            yield Static(id="acct-list")
+            with Horizontal(classes="acct-row"):
+                yield Select([], id="acct_pick", prompt="select account…")
+                yield Button("Use", id="acct_use", variant="primary")
+                yield Button("Remove", id="acct_remove", variant="error")
+            yield Static("Add / update an account:", classes="acct-sub")
+            with Horizontal(classes="acct-row"):
+                yield Input(placeholder="name (e.g. swing)", id="acct_name")
+                yield Input(placeholder="Alpaca API key id", id="acct_key")
+                yield Input(placeholder="Alpaca API secret", id="acct_secret", password=True)
+                yield Checkbox("paper", value=True, id="acct_paper")
+                yield Button("Add", id="acct_add", variant="success")
+            yield Button("Close", id="acct_close")
+
+    def on_mount(self) -> None:
+        self._refresh_list()
+
+    # ── rendering ────────────────────────────────────────────────────────────
+    def _refresh_list(self) -> None:
+        store: AccountStore = self.app.accounts
+        try:
+            profiles = store.list()
+        except Exception as exc:  # noqa: BLE001
+            self.query_one("#acct-list", Static).update(Text(f"account store error: {exc}", style="red"))
+            return
+        body = Text()
+        if not profiles:
+            body.append("No accounts yet. Add one below.\n", style="grey58")
+        for p in profiles:
+            marker = "●" if p.active else " "
+            tag, tstyle = ("paper", "yellow") if p.paper else ("LIVE", "bold red")
+            line_style = "bold #84bba1" if p.active else "grey78"
+            body.append(f" {marker} {p.name:<18s} ", style=line_style)
+            body.append(f"[{tag}]\n", style=tstyle)
+        self.query_one("#acct-list", Static).update(body)
+        options = [(p.name, p.name) for p in profiles]
+        pick = self.query_one("#acct_pick", Select)
+        pick.set_options(options)
+
+    def _selected(self) -> str | None:
+        value = self.query_one("#acct_pick", Select).value
+        return None if value is Select.BLANK else value
+
+    # ── actions ──────────────────────────────────────────────────────────────
+    def action_close(self) -> None:
+        self.dismiss()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "acct_close":
+            self.dismiss()
+        elif bid == "acct_add":
+            self._add()
+        elif bid == "acct_use":
+            self._use()
+        elif bid == "acct_remove":
+            self._remove()
+
+    def _add(self) -> None:
+        store: AccountStore = self.app.accounts
+        name = self.query_one("#acct_name", Input).value.strip()
+        key = self.query_one("#acct_key", Input).value.strip()
+        secret = self.query_one("#acct_secret", Input).value.strip()
+        paper = self.query_one("#acct_paper", Checkbox).value
+        try:
+            store.add(name, key, secret, paper=paper)
+        except (ValueError, KeyringUnavailable) as exc:
+            self.app._log(f"[yellow]account not saved:[/] {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.app._log(f"[red]account save failed:[/] {exc}")
+            return
+        for wid in ("acct_name", "acct_key", "acct_secret"):
+            self.query_one(f"#{wid}", Input).value = ""
+        self.app._log(f"[green]account saved[/] {name} ({'paper' if paper else 'LIVE'}) — now active.")
+        self._refresh_list()
+        self.app._apply_account_switch(name)
+
+    def _use(self) -> None:
+        name = self._selected()
+        if not name:
+            self.app._log("[yellow]pick an account to use first.[/]")
+            return
+        self.app._apply_account_switch(name)
+        self._refresh_list()
+
+    def _remove(self) -> None:
+        name = self._selected()
+        if not name:
+            self.app._log("[yellow]pick an account to remove first.[/]")
+            return
+        store: AccountStore = self.app.accounts
+        try:
+            store.remove(name)
+        except Exception as exc:  # noqa: BLE001
+            self.app._log(f"[red]remove failed:[/] {exc}")
+            return
+        self.app._log(f"[grey70]removed account[/] {name}.")
+        self._refresh_list()
+        # If the active account changed, reconnect to whatever's active now.
+        self.app._apply_account_switch(store.active())
+
+
 class TerminalApp(App):
     CSS = """
     Screen { layout: vertical; }
@@ -207,11 +334,24 @@ class TerminalApp(App):
     .exec-row Button { width: auto; margin: 0 0 0 1; }
     .exec-row Checkbox { width: auto; height: 3; content-align: left middle; }
     RichLog { height: 6; border: round #555555; margin: 0 1; }
+    AccountsScreen { align: center middle; }
+    #acct-box {
+        width: 90%; max-width: 120; height: auto; padding: 1 2;
+        border: thick #84bba1; background: $panel;
+    }
+    .acct-title { color: #84bba1; text-style: bold; height: 1; }
+    .acct-sub { color: grey; height: 1; margin: 1 0 0 0; }
+    #acct-list { height: auto; min-height: 3; margin: 1 0; }
+    .acct-row { height: 3; }
+    .acct-row Input, .acct-row Select { width: 1fr; margin: 0 1 0 0; }
+    .acct-row Button { width: auto; margin: 0 0 0 1; }
+    .acct-row Checkbox { width: auto; height: 3; content-align: left middle; }
     """
     BINDINGS = [
         ("r", "refresh", "Refresh now"),
         ("s", "focus_submit", "Order entry"),
         ("x", "cancel_all", "Cancel all orders"),
+        ("a", "accounts", "Accounts"),
         ("q", "quit", "Quit"),
     ]
 
@@ -219,6 +359,7 @@ class TerminalApp(App):
         super().__init__()
         self.settings = settings
         self.demo = demo
+        self.accounts = AccountStore()
         self.broker = None if demo else make_broker(settings)
 
     def compose(self) -> ComposeResult:
@@ -234,10 +375,14 @@ class TerminalApp(App):
         yield RichLog(id="log", markup=True, highlight=True)
         yield Footer()
 
+    def _subtitle(self) -> str:
+        acct = f" · acct:{self.settings.account}" if self.settings.account else ""
+        return (f"{self.settings.ticker} · {self.settings.strategy.value} · "
+                f"{self.settings.mode.value}{acct}" + (" · DEMO" if self.demo else ""))
+
     def on_mount(self) -> None:
         self.title = "Mamba Terminal — by Quincy Gininda"
-        self.sub_title = (f"{self.settings.ticker} · {self.settings.strategy.value} · "
-                          f"{self.settings.mode.value}" + (" · DEMO" if self.demo else ""))
+        self.sub_title = self._subtitle()
         self._log(f"[bold]starting[/] — strategy={self.settings.strategy.value} "
                   f"mode={self.settings.mode.value} {'(offline demo data)' if self.demo else ''}")
         # Prefill the order-entry symbol with the tracked ticker.
@@ -294,7 +439,9 @@ class TerminalApp(App):
         elif self.broker is None:
             acct.show_none("no Alpaca credentials — data-only mode\n(set ALPACA_API_KEY_ID / ALPACA_API_SECRET_KEY)")
         else:
-            acct.update_account(account, position, self.settings.mode, open_orders)
+            acct.update_account(account, position, self.settings.mode, open_orders,
+                                account_name=self.settings.account,
+                                account_paper=self.settings.account_paper)
         vflag = "labels ✓" if snap.verification.passed else "[red]labels ✗[/]"
         self._log(f"[green]updated[/] {snap.ticker}: {snap.current_state_name} → "
                   f"target {snap.target_label} ({vflag})")
@@ -305,6 +452,41 @@ class TerminalApp(App):
 
     def action_cancel_all(self) -> None:
         self._cancel_all_orders()
+
+    # ── multi-account ────────────────────────────────────────────────────────
+    def action_accounts(self) -> None:
+        self.push_screen(AccountsScreen())
+
+    def _apply_account_switch(self, name: str | None) -> None:
+        """Switch the active Alpaca profile and rebuild the live broker."""
+        if not name:
+            # No accounts left — drop to data-only unless legacy keys exist.
+            self.settings.account = None
+            self.settings.account_paper = None
+            self.settings.api_key = self.settings.api_secret = None
+            self.broker = None
+            self.sub_title = self._subtitle()
+            self._log("[grey58]no active account — data-only mode.[/]")
+            return
+        try:
+            self.accounts.set_active(name)
+            resolved = self.accounts.resolve(name)
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"[red]could not switch account:[/] {exc}")
+            return
+        if resolved is None:
+            self._log(f"[yellow]account {name} has no stored keys.[/]")
+            return
+        self.settings.api_key = resolved.key_id
+        self.settings.api_secret = resolved.secret
+        self.settings.account = resolved.name
+        self.settings.account_paper = resolved.paper
+        self.broker = None if self.demo else make_broker(self.settings)
+        self.sub_title = self._subtitle()
+        endpoint = "paper" if resolved.paper else "LIVE"
+        self._log(f"[bold #84bba1]connected account[/] {resolved.name} ({endpoint} keys). "
+                  "Reads use these credentials; orders still obey --mode.")
+        self.action_refresh()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "exec_submit":

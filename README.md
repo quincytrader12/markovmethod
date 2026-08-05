@@ -116,7 +116,8 @@ mamba-terminal --ticker SPY                    # dashboard, read-only
 mamba-terminal --ticker AAPL --demo            # offline synthetic data
 mamba-terminal --ticker SPY --strategy standalone
 mamba-terminal --mode paper                    # paper auto-trade (needs keys)
-mamba-terminal --save-keys <KEY_ID> <SECRET>   # store keys in the OS keychain
+mamba-terminal --save-keys <KEY_ID> <SECRET> --account swing   # save keys to a profile
+mamba-terminal --account swing --mode paper    # run against a named account
 ```
 
 **Execution is gated by mode.** `dashboard` (default) is read-only and never
@@ -151,6 +152,36 @@ well-formed requests reach Alpaca. The panel is **inert in `dashboard`/demo
 mode** and only arms under `--mode paper` or `--mode live`. Open orders are
 listed in the account panel and refresh after every submit/cancel.
 
+### Accounts — connect multiple portfolios
+
+Each Alpaca account is a named **profile** with its own keys and a paper/live
+flag. Keys are stored in the **OS keychain** (via `keyring`); only the profile
+names + paper/live flags live in a small local registry
+(`~/.config/mamba-terminal/accounts.json`, or `%APPDATA%\mamba-terminal\` on
+Windows). Secrets are never written to disk in plaintext or bundled into the
+exe.
+
+**From the CLI:**
+
+```bash
+mamba-terminal --save-keys <KEY_ID> <SECRET> --account swing          # paper profile
+mamba-terminal --save-keys <KEY_ID> <SECRET> --account live1 --live   # live-key profile
+mamba-terminal --list-accounts                                        # show profiles (* = active)
+mamba-terminal --remove-account swing                                 # delete a profile
+mamba-terminal --account live1 --mode live                            # launch on a profile
+```
+
+**From inside the terminal:** press **`a`** to open the **Accounts screen**,
+where you can add a profile (name / key / secret / paper), **Use** one to
+switch the active portfolio, or **Remove** one. Switching rebuilds the live
+broker on the fly, so you can flip between portfolios without restarting. The
+connected account (and whether its keys are paper or live) is shown in the
+account panel and the title bar.
+
+The profile's paper/live flag selects the Alpaca **endpoint**; `--mode` still
+independently gates whether orders are actually placed (`dashboard` stays
+read-only regardless of which account is connected).
+
 ### Tests
 
 ```bash
@@ -161,7 +192,8 @@ pytest -q        # order-taxonomy + execution-panel wiring (headless Textual)
 `tests/test_orders.py` builds every order type/class/TIF against the real
 alpaca-py request classes; `tests/test_execution_panel.py` drives the TUI
 headlessly with a fake broker to prove the panel collects a ticket, validates
-it, and submits through the gated seam.
+it, and submits through the gated seam; `tests/test_accounts.py` and
+`tests/test_accounts_tui.py` cover multi-account storage and live switching.
 
 ## TradingView indicator
 
@@ -189,12 +221,15 @@ TradingView Pine Editor and add it to a chart (BTCUSDT daily is a good start).
 │   ├── config.py                    # Settings, execution Mode, Strategy, key handling
 │   ├── broker.py                    # gated Alpaca execution seam (submit/cancel/list)
 │   ├── orders.py                    # OrderTicket -> alpaca-py request (full taxonomy)
-│   ├── tui.py                       # Textual dashboard + execution panel
+│   ├── accounts.py                  # named multi-account profiles (keychain-backed)
+│   ├── tui.py                       # Textual dashboard + execution + accounts screen
 │   ├── terminal.py                  # `mamba-terminal` entry point
 │   └── proof.py                     # `markov-proof` before/after figure + metrics
 ├── tests/
 │   ├── test_orders.py               # every order type/class/TIF builds correctly
-│   └── test_execution_panel.py      # headless TUI wiring (fake broker)
+│   ├── test_execution_panel.py      # headless TUI wiring (fake broker)
+│   ├── test_accounts.py             # multi-account store (fake keyring)
+│   └── test_accounts_tui.py         # accounts screen + live switching
 └── tradingview/
     └── markov_regime.pine           # Pine v5 on-chart companion
 ```

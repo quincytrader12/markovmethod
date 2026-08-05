@@ -45,10 +45,18 @@ class Settings:
     size_scale: float = 0.5          # STANDALONE: signal/scale before the cap
     api_key: str | None = None
     api_secret: str | None = None
+    # Active Alpaca profile (see accounts.py); None = legacy env/keychain keys.
+    account: str | None = None
+    # Whether the active profile's keys are paper (True) or live (False/None).
+    account_paper: bool | None = None
 
     @property
     def paper(self) -> bool:
-        """Alpaca TradingClient `paper` flag — anything but LIVE is paper."""
+        """Alpaca TradingClient `paper` flag — the connected profile decides the
+        endpoint (paper vs live); without a profile, anything but LIVE mode is
+        paper."""
+        if self.account_paper is not None:
+            return self.account_paper
         return self.mode is not Mode.LIVE
 
     @property
@@ -75,13 +83,28 @@ def _load_keys() -> tuple[str | None, str | None]:
     return key, sec
 
 
-def load_settings(**overrides) -> Settings:
-    """Build Settings from env/keychain, with explicit overrides winning.
+def load_settings(account: str | None = None, **overrides) -> Settings:
+    """Build Settings, resolving credentials from (in order):
+
+      1. a named/active account profile (see accounts.py), else
+      2. environment variables / the legacy single-account keychain slot.
 
     `None` overrides are ignored so callers can pass argparse defaults freely.
     """
-    key, sec = _load_keys()
-    s = Settings(api_key=key, api_secret=sec)
+    key = sec = None
+    acct_name = acct_paper = None
+    try:
+        from .accounts import AccountStore
+        resolved = AccountStore().resolve(account)
+    except Exception:  # noqa: BLE001 — accounts are optional; fall back to legacy
+        resolved = None
+    if resolved is not None:
+        key, sec = resolved.key_id, resolved.secret
+        acct_name, acct_paper = resolved.name, resolved.paper
+    else:
+        key, sec = _load_keys()
+
+    s = Settings(api_key=key, api_secret=sec, account=acct_name, account_paper=acct_paper)
     for name, value in overrides.items():
         if value is not None and hasattr(s, name):
             setattr(s, name, value)
