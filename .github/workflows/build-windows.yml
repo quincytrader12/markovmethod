@@ -1,0 +1,47 @@
+name: build-windows-exe
+
+on:
+  push:
+    branches:
+      - main
+      - claude/markov-hedge-fund-install-ajdttg
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to attach the exe to a release on tag
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[terminal,build]"
+
+      - name: Build markov-terminal.exe
+        run: pyinstaller --clean --noconfirm packaging/markov-terminal.spec
+
+      - name: Smoke test the executable
+        run: ./dist/markov-terminal.exe --help
+
+      - name: Upload exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: markov-terminal-windows
+          path: dist/markov-terminal.exe
+          if-no-files-found: error
+
+      - name: Attach exe to release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/markov-terminal.exe

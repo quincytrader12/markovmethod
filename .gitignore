@@ -8,3 +8,6 @@ uv.lock
 scratch_*
 markov_proof.png
 *.svg
+# pyinstaller build outputs (the .spec under packaging/ IS tracked)
+/build/
+/dist/
