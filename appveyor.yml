@@ -2,37 +2,40 @@
 #  AppVeyor CI - builds the Mamba Terminal Windows installer in the cloud.
 #
 #  Independent of GitHub Actions: sign in at https://ci.appveyor.com with your
-#  GitHub account, add this repo, and every build produces:
+#  GitHub account, add this repo, and each build produces (ARTIFACTS tab):
 #     - dist\mamba-web.exe          (neon web HUD)
 #     - dist\mamba-terminal.exe     (text terminal)
 #     - installer_output\MambaTerminalSetup.exe   (the installer)
-#  all downloadable from the build's ARTIFACTS tab.
 #
-#  Python 3.12 and Inno Setup are installed here via Chocolatey so the build
-#  does NOT depend on any preinstalled paths on the image.
+#  Python 3.12 and Inno Setup are installed here by Chocolatey to their default
+#  locations, then called by FULL PATH - so nothing depends on PATH being
+#  refreshed between steps (that was the earlier failure).
 # ============================================================================
 
 version: 0.1.0.{build}
 
 image: Visual Studio 2022
 
+environment:
+  # Chocolatey installs these to exactly these locations.
+  PY: "C:\\Python312\\python.exe"
+  ISCC: "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe"
+
 install:
-  # Install Python 3.12 + Inno Setup (choco puts both on PATH for later steps).
   - cmd: choco install python312 -y --no-progress
   - cmd: choco install innosetup -y --no-progress
-  - cmd: refreshenv
-  - cmd: python --version
-  - cmd: python -m pip install --upgrade pip
-  - cmd: python -m pip install ".[terminal,web,build]"
+  - cmd: '"%PY%" --version'
+  - cmd: '"%PY%" -m pip install --upgrade pip'
+  - cmd: '"%PY%" -m pip install ".[terminal,web,build]"'
 
 build_script:
   # 1) Build both executables from the PyInstaller specs.
-  - cmd: python -m PyInstaller --clean --noconfirm packaging\mamba-terminal.spec
-  - cmd: python -m PyInstaller --clean --noconfirm packaging\mamba-web.spec
+  - cmd: '"%PY%" -m PyInstaller --clean --noconfirm packaging\mamba-terminal.spec'
+  - cmd: '"%PY%" -m PyInstaller --clean --noconfirm packaging\mamba-web.spec'
   # 2) Smoke-test the web exe (starts the server, checks routes, exits).
-  - cmd: dist\mamba-web.exe --selftest
-  # 3) Compile the installer with Inno Setup.
-  - cmd: iscc installer\mamba.iss
+  - cmd: 'dist\mamba-web.exe --selftest'
+  # 3) Compile the installer with Inno Setup (full path, no PATH reliance).
+  - cmd: '"%ISCC%" installer\mamba.iss'
 
 # No unit-test phase on the CI image; we only package here.
 test: off
