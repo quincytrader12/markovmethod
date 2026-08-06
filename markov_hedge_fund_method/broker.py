@@ -212,13 +212,18 @@ class AlpacaBroker:
 
     def list_tradable_symbols(self) -> list[str]:
         """All active, tradable US-equity symbols (for the search universe)."""
+        return sorted({a["symbol"] for a in self.list_tradable_assets()})
+
+    def list_tradable_assets(self) -> list[dict]:
+        """All active, tradable US-equity assets as {symbol, name}."""
         from alpaca.trading.enums import AssetClass, AssetStatus
         from alpaca.trading.requests import GetAssetsRequest
 
         assets = self.client.get_all_assets(
             GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY)
         )
-        return sorted({a.symbol for a in assets if getattr(a, "tradable", False)})
+        return [{"symbol": a.symbol, "name": getattr(a, "name", "") or ""}
+                for a in assets if getattr(a, "tradable", False)]
 
 
 def make_broker(settings: Settings) -> AlpacaBroker | None:

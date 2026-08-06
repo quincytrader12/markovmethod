@@ -80,6 +80,22 @@ def test_config_and_state_demo():
     assert "dataSource" in st
 
 
+def test_state_has_candles_and_name():
+    client, _ = _demo_client()
+    st = client.get("/api/state", params={"symbol": "AAPL"}).json()
+    assert st["name"] == "Apple Inc."
+    bar = st["chart"]["bars"][-1]
+    assert {"o", "h", "l", "c", "up", "regime", "t"} <= set(bar)
+    assert bar["l"] <= bar["o"] <= bar["h"] and bar["l"] <= bar["c"] <= bar["h"]
+    assert isinstance(bar["up"], bool)
+
+
+def test_quote_includes_name():
+    client, _ = _demo_client()
+    q = client.get("/api/quote", params={"symbol": "MSFT"}).json()
+    assert q["name"] == "Microsoft Corporation"
+
+
 def test_index_served():
     client, _ = _demo_client()
     r = client.get("/")
@@ -151,10 +167,12 @@ def test_quote_is_cheap_and_shaped():
 def test_search_prefix_and_custom_ticker():
     client, _ = _demo_client()
     res = client.get("/api/search", params={"q": "aa"}).json()["results"]
-    assert "AAPL" in res and all(isinstance(s, str) for s in res)
+    syms = [r["symbol"] for r in res]
+    assert "AAPL" in syms and all("name" in r for r in res)
+    assert any(r["symbol"] == "AAPL" and "Apple" in r["name"] for r in res)  # names attached
     # a ticker not in the bundled universe is still offered verbatim
     custom = client.get("/api/search", params={"q": "ZZZZ"}).json()["results"]
-    assert custom[0] == "ZZZZ"
+    assert custom[0]["symbol"] == "ZZZZ"
 
 
 def test_state_chart_is_wide_enough_for_timeframes():
@@ -207,8 +225,8 @@ def test_search_returns_connected_flag_and_letter_matches():
     client, _ = _demo_client()
     d = client.get("/api/search", params={"q": "A"}).json()
     assert d["connected"] is False                       # demo → not Alpaca-connected
-    assert all(isinstance(s, str) for s in d["results"])
-    assert any(s.startswith("A") for s in d["results"])  # letter search lists A-tickers
+    syms = [r["symbol"] for r in d["results"]]
+    assert any(s.startswith("A") for s in syms)          # letter search lists A-tickers
 
 
 def test_mode_switch_endpoint():

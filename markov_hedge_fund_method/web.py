@@ -29,7 +29,7 @@ from dataclasses import replace
 from .accounts import AccountStore
 from .broker import ReadOnlyError, make_broker
 from .config import Mode, Settings, load_settings
-from .market_data import get_history, synthetic_close
+from .market_data import get_history, get_ohlc, synthetic_close, synthetic_ohlc
 from .markov2 import Strategy
 from .news import fetch_news
 from .orders import OrderTicket, OrderValidationError
@@ -54,6 +54,50 @@ SYMBOL_UNIVERSE = sorted(set(DEFAULT_SYMBOLS + [
 ]))
 
 
+# Full names for the bundled universe (tooltips). When connected to Alpaca the
+# real asset names are used for every symbol; this covers the offline case.
+ASSET_NAMES = {
+    "SPY": "SPDR S&P 500 ETF Trust", "QQQ": "Invesco QQQ Trust (Nasdaq-100)",
+    "IWM": "iShares Russell 2000 ETF", "DIA": "SPDR Dow Jones Industrial Average ETF",
+    "VOO": "Vanguard S&P 500 ETF", "VTI": "Vanguard Total Stock Market ETF",
+    "ARKK": "ARK Innovation ETF", "XLF": "Financial Select Sector SPDR",
+    "XLK": "Technology Select Sector SPDR", "XLE": "Energy Select Sector SPDR",
+    "GLD": "SPDR Gold Shares", "SLV": "iShares Silver Trust", "USO": "United States Oil Fund",
+    "TLT": "iShares 20+ Year Treasury Bond ETF", "HYG": "iShares iBoxx High Yield Corp Bond ETF",
+    "AAPL": "Apple Inc.", "MSFT": "Microsoft Corporation", "NVDA": "NVIDIA Corporation",
+    "AMZN": "Amazon.com, Inc.", "GOOGL": "Alphabet Inc. (Class A)", "GOOG": "Alphabet Inc. (Class C)",
+    "META": "Meta Platforms, Inc.", "TSLA": "Tesla, Inc.", "NFLX": "Netflix, Inc.",
+    "AMD": "Advanced Micro Devices, Inc.", "INTC": "Intel Corporation", "MU": "Micron Technology, Inc.",
+    "AVGO": "Broadcom Inc.", "QCOM": "QUALCOMM Incorporated", "CRM": "Salesforce, Inc.",
+    "ORCL": "Oracle Corporation", "ADBE": "Adobe Inc.", "CSCO": "Cisco Systems, Inc.",
+    "IBM": "International Business Machines", "TXN": "Texas Instruments Incorporated",
+    "NOW": "ServiceNow, Inc.", "SHOP": "Shopify Inc.", "UBER": "Uber Technologies, Inc.",
+    "ABNB": "Airbnb, Inc.", "PLTR": "Palantir Technologies Inc.", "SNOW": "Snowflake Inc.",
+    "COIN": "Coinbase Global, Inc.", "SQ": "Block, Inc.", "PYPL": "PayPal Holdings, Inc.",
+    "V": "Visa Inc.", "MA": "Mastercard Incorporated", "JPM": "JPMorgan Chase & Co.",
+    "BAC": "Bank of America Corporation", "WFC": "Wells Fargo & Company", "GS": "Goldman Sachs Group",
+    "MS": "Morgan Stanley", "C": "Citigroup Inc.", "BRK.B": "Berkshire Hathaway (Class B)",
+    "BX": "Blackstone Inc.", "SCHW": "Charles Schwab Corporation", "KO": "The Coca-Cola Company",
+    "PEP": "PepsiCo, Inc.", "MCD": "McDonald's Corporation", "SBUX": "Starbucks Corporation",
+    "NKE": "NIKE, Inc.", "DIS": "The Walt Disney Company", "WMT": "Walmart Inc.",
+    "COST": "Costco Wholesale Corporation", "TGT": "Target Corporation", "HD": "The Home Depot, Inc.",
+    "LOW": "Lowe's Companies, Inc.", "PG": "The Procter & Gamble Company", "JNJ": "Johnson & Johnson",
+    "PFE": "Pfizer Inc.", "MRK": "Merck & Co., Inc.", "ABBV": "AbbVie Inc.", "LLY": "Eli Lilly and Company",
+    "UNH": "UnitedHealth Group Incorporated", "CVS": "CVS Health Corporation",
+    "XOM": "Exxon Mobil Corporation", "CVX": "Chevron Corporation", "COP": "ConocoPhillips",
+    "OXY": "Occidental Petroleum", "BA": "The Boeing Company", "CAT": "Caterpillar Inc.",
+    "GE": "General Electric Company", "F": "Ford Motor Company", "GM": "General Motors Company",
+    "T": "AT&T Inc.", "VZ": "Verizon Communications Inc.", "TMUS": "T-Mobile US, Inc.",
+    "DAL": "Delta Air Lines, Inc.", "AAL": "American Airlines Group", "UAL": "United Airlines Holdings",
+    "RIVN": "Rivian Automotive, Inc.", "LCID": "Lucid Group, Inc.", "NIO": "NIO Inc.",
+    "SOFI": "SoFi Technologies, Inc.", "DKNG": "DraftKings Inc.", "ROKU": "Roku, Inc.",
+    "ZM": "Zoom Video Communications", "DOCU": "DocuSign, Inc.", "TWLO": "Twilio Inc.",
+    "NET": "Cloudflare, Inc.", "DDOG": "Datadog, Inc.", "CRWD": "CrowdStrike Holdings",
+    "ZS": "Zscaler, Inc.", "PANW": "Palo Alto Networks, Inc.", "A": "Agilent Technologies, Inc.",
+    "BTC-USD": "Bitcoin", "ETH-USD": "Ethereum", "SOL-USD": "Solana", "DOGE-USD": "Dogecoin",
+}
+
+
 def _seed(symbol: str) -> int:
     return sum(ord(ch) for ch in symbol) % 997
 
@@ -73,23 +117,42 @@ class AppState:
         self._state_cache: dict[str, tuple[float, dict]] = {}
         self._news_cache: dict[str, tuple[float, list]] = {}
         self._alpaca_symbols: set[str] | None = None
+        self._alpaca_names: dict[str, str] = {}
         self.ttl = self.CACHE_TTL if demo else 60.0  # live data goes stale sooner
 
     def reconnect(self) -> None:
         self.broker = None if self.demo else make_broker(self.settings)
         self._state_cache.clear()   # a new account may change the data source
         self._alpaca_symbols = None  # and a different asset universe
+        self._alpaca_names = {}
+
+    def _ensure_alpaca_universe(self) -> None:
+        if self.broker is None or self._alpaca_symbols is not None:
+            return
+        try:
+            assets = self.broker.list_tradable_assets()  # [{symbol, name}]
+            self._alpaca_symbols = {a["symbol"] for a in assets}
+            self._alpaca_names = {a["symbol"]: a["name"] for a in assets if a.get("name")}
+        except Exception:  # noqa: BLE001 — cache empty to avoid refetch storms
+            self._alpaca_symbols = set()
+            self._alpaca_names = {}
 
     def alpaca_symbols(self) -> set[str] | None:
         """Set of tradable Alpaca symbols when connected (cached), else None."""
         if self.broker is None:
             return None
-        if self._alpaca_symbols is None:
-            try:
-                self._alpaca_symbols = set(self.broker.list_tradable_symbols())
-            except Exception:  # noqa: BLE001 — cache empty to avoid refetch storms
-                self._alpaca_symbols = set()
+        self._ensure_alpaca_universe()
         return self._alpaca_symbols or None
+
+    def name_for(self, symbol: str) -> str:
+        """Full asset name — Alpaca's when connected, else the bundled list."""
+        symbol = symbol.upper()
+        if self.broker is not None:
+            self._ensure_alpaca_universe()
+            name = self._alpaca_names.get(symbol)
+            if name:
+                return name
+        return ASSET_NAMES.get(symbol, "")
 
     def search_universe(self) -> list[str]:
         al = self.alpaca_symbols()
@@ -104,15 +167,27 @@ class AppState:
         except Exception:  # noqa: BLE001 — never leave the HUD blank
             return synthetic_close(seed=_seed(symbol)), "synthetic (data unavailable)"
 
+    def ohlc_for(self, symbol: str):
+        """OHLC frame for a symbol (for candlesticks), always renderable."""
+        if self.demo:
+            return synthetic_ohlc(seed=_seed(symbol)), "synthetic (demo)"
+        try:
+            return get_ohlc(replace(self.settings, ticker=symbol)), "live"
+        except Exception:  # noqa: BLE001 — never leave the HUD blank
+            return synthetic_ohlc(seed=_seed(symbol)), "synthetic (data unavailable)"
+
     def state_payload(self, symbol: str) -> dict:
         """Full HUD payload for a symbol, memoised with a short TTL."""
         cached = self._state_cache.get(symbol)
         if cached and (time.monotonic() - cached[0]) < self.ttl:
             return cached[1]
-        close, source = self.close_for(symbol)
+        df, source = self.ohlc_for(symbol)
+        close = df["Close"]
         payload = market_state(close, symbol, window=self.settings.window,
-                               threshold=self.settings.threshold, strategy=self.settings.strategy)
+                               threshold=self.settings.threshold, strategy=self.settings.strategy,
+                               ohlc=df)
         payload["dataSource"] = source
+        payload["name"] = self.name_for(symbol)
         self._state_cache[symbol] = (time.monotonic(), payload)
         return payload
 
@@ -175,7 +250,9 @@ def create_app(state: AppState):
         # Offline we can't verify against Alpaca, so allow the exact ticker typed.
         if not connected and q not in results:
             results = [q] + results
-        return {"results": results[:30], "connected": connected}
+        results = results[:30]
+        return {"results": [{"symbol": s, "name": state.name_for(s)} for s in results],
+                "connected": connected}
 
     @app.get("/api/validate")
     def validate(symbol: str = ""):
@@ -204,10 +281,13 @@ def create_app(state: AppState):
         cached = state._state_cache.get(symbol)
         if cached and (time.monotonic() - cached[0]) < state.ttl:
             p = cached[1]
-            return {"ticker": symbol, "lastPrice": p["lastPrice"], "regime": p["regime"]}
+            return {"ticker": symbol, "lastPrice": p["lastPrice"], "regime": p["regime"],
+                    "name": p.get("name", "")}
         close, _ = state.close_for(symbol)
-        return quote_state(close, symbol, window=state.settings.window,
-                           threshold=state.settings.threshold)
+        q = quote_state(close, symbol, window=state.settings.window,
+                        threshold=state.settings.threshold)
+        q["name"] = state.name_for(symbol)
+        return q
 
     @app.get("/api/news")
     def news(symbol: str = "SPY"):

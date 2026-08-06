@@ -149,11 +149,13 @@ def quote_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: f
 
 def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: float = 0.02,
                  strategy: Strategy = Strategy.FILTER, tail: int = 520,
-                 include_metrics: bool = True) -> dict:
+                 include_metrics: bool = True, ohlc: pd.DataFrame | None = None) -> dict:
     """Full HUD payload for one symbol from its close series.
 
     `tail` is how many recent bars of chart series to send — large enough that
     the client can slice its own timeframe (1M/3M/6M/1Y/2Y) with no round-trip.
+    `ohlc` (Open/High/Low/Close) drives the candlesticks; when absent, candles
+    are derived from close (open = previous close) so the chart still renders.
     """
     snap = analyze2(close, ticker, window=window, threshold=threshold, strategy=strategy)
     labels = label_regimes(close, window=window, threshold=threshold)
@@ -168,14 +170,23 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
     def series(s):
         return [None if pd.isna(v) else round(float(v), 4) for v in s]
 
-    bars = [
-        {
-            "t": ts.strftime("%Y-%m-%d"),
-            "c": round(float(px), 4),
-            "regime": _REGIME_KEY[int(rg)],
-        }
-        for ts, px, rg in zip(tail_close.index, tail_close.to_numpy(), lab_tail.to_numpy())
-    ]
+    r4 = lambda v: round(float(v), 4)
+    if ohlc is not None and not ohlc.empty:
+        od = ohlc.reindex(tail_close.index).ffill()
+        bars = [
+            {"t": ts.strftime("%Y-%m-%d"), "o": r4(o), "h": r4(h), "l": r4(lo), "c": r4(c),
+             "up": bool(c >= o), "regime": _REGIME_KEY[int(rg)]}
+            for ts, o, h, lo, c, rg in zip(
+                tail_close.index, od["Open"], od["High"], od["Low"], od["Close"], lab_tail.to_numpy())
+        ]
+    else:
+        cvals = tail_close.to_numpy()
+        bars = []
+        for i, (ts, c, rg) in enumerate(zip(tail_close.index, cvals, lab_tail.to_numpy())):
+            o = float(cvals[i - 1]) if i > 0 else float(c)
+            bars.append({"t": ts.strftime("%Y-%m-%d"), "o": r4(o), "h": r4(max(o, c) * 1.002),
+                         "l": r4(min(o, c) * 0.998), "c": r4(c), "up": bool(c >= o),
+                         "regime": _REGIME_KEY[int(rg)]})
 
     metrics = walk_forward_backtest(close, labels) if include_metrics else {
         "sharpe": float("nan"), "max_drawdown": float("nan"), "n_trades": 0,
