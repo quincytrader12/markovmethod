@@ -86,9 +86,25 @@ def greed_fear(close: pd.Series) -> dict:
     }
 
 
+def quote_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: float = 0.02) -> dict:
+    """Cheap watchlist quote: last price + current regime, no matrix/backtest."""
+    labels = label_regimes(close, window=window, threshold=threshold)
+    current = int(labels.iloc[-1]) if len(labels) else 1
+    return {
+        "ticker": ticker,
+        "lastPrice": round(float(close.iloc[-1]), 4),
+        "regime": _REGIME_KEY[current],
+    }
+
+
 def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: float = 0.02,
-                 strategy: Strategy = Strategy.FILTER, tail: int = 260) -> dict:
-    """Full HUD payload for one symbol from its close series."""
+                 strategy: Strategy = Strategy.FILTER, tail: int = 520,
+                 include_metrics: bool = True) -> dict:
+    """Full HUD payload for one symbol from its close series.
+
+    `tail` is how many recent bars of chart series to send — large enough that
+    the client can slice its own timeframe (1M/3M/6M/1Y/2Y) with no round-trip.
+    """
     snap = analyze2(close, ticker, window=window, threshold=threshold, strategy=strategy)
     labels = label_regimes(close, window=window, threshold=threshold)
 
@@ -111,7 +127,8 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
         for ts, px, rg in zip(tail_close.index, tail_close.to_numpy(), lab_tail.to_numpy())
     ]
 
-    metrics = walk_forward_backtest(close, labels)
+    metrics = walk_forward_backtest(close, labels) if include_metrics else {
+        "sharpe": float("nan"), "max_drawdown": float("nan"), "n_trades": 0}
 
     return {
         "ticker": ticker,

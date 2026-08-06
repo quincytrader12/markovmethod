@@ -23,6 +23,7 @@ annotations (from that future import) break body/Request detection here.
 """
 
 import os
+import time
 from dataclasses import replace
 
 from .accounts import AccountStore
@@ -30,11 +31,27 @@ from .broker import ReadOnlyError, make_broker
 from .config import Mode, Settings, load_settings
 from .market_data import get_history, synthetic_close
 from .markov2 import Strategy
+from .news import fetch_news
 from .orders import OrderTicket, OrderValidationError
-from .webstate import market_state
+from .webstate import market_state, quote_state
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "web_static")
 DEFAULT_SYMBOLS = ["SPY", "QQQ", "AAPL", "NVDA", "TSLA", "MSFT", "BTC-USD"]
+
+# A small bundled universe so the search box has suggestions offline. Typing any
+# ticker not in this list still works — it's used verbatim.
+SYMBOL_UNIVERSE = sorted(set(DEFAULT_SYMBOLS + [
+    "AMZN", "GOOGL", "GOOG", "META", "NFLX", "AMD", "INTC", "MU", "AVGO", "QCOM",
+    "CRM", "ORCL", "ADBE", "CSCO", "IBM", "TXN", "NOW", "SHOP", "UBER", "ABNB",
+    "PLTR", "SNOW", "COIN", "SQ", "PYPL", "V", "MA", "JPM", "BAC", "WFC", "GS",
+    "MS", "C", "BRK.B", "BX", "SCHW", "KO", "PEP", "MCD", "SBUX", "NKE", "DIS",
+    "WMT", "COST", "TGT", "HD", "LOW", "PG", "JNJ", "PFE", "MRK", "ABBV", "LLY",
+    "UNH", "CVS", "XOM", "CVX", "COP", "OXY", "BA", "CAT", "GE", "F", "GM",
+    "T", "VZ", "TMUS", "DAL", "AAL", "UAL", "RIVN", "LCID", "NIO", "SOFI",
+    "DKNG", "ROKU", "ZM", "DOCU", "TWLO", "NET", "DDOG", "CRWD", "ZS", "PANW",
+    "SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "ARKK", "XLF", "XLK", "XLE", "GLD",
+    "SLV", "USO", "TLT", "HYG", "BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD",
+]))
 
 
 def _seed(symbol: str) -> int:
@@ -44,14 +61,21 @@ def _seed(symbol: str) -> int:
 class AppState:
     """Mutable app state for the single local user."""
 
+    # Recomputing the walk-forward backtest per symbol is the slow part; cache
+    # the finished payload briefly so flipping between assets is instant.
+    CACHE_TTL = 3600.0  # demo data is deterministic; refreshed by version bumps
+
     def __init__(self, settings: Settings, demo: bool = False):
         self.settings = settings
         self.demo = demo
         self.accounts = AccountStore()
         self.broker = None if demo else make_broker(settings)
+        self._state_cache: dict[str, tuple[float, dict]] = {}
+        self.ttl = self.CACHE_TTL if demo else 60.0  # live data goes stale sooner
 
     def reconnect(self) -> None:
         self.broker = None if self.demo else make_broker(self.settings)
+        self._state_cache.clear()  # a new account may change the data source
 
     def close_for(self, symbol: str):
         """Close series for a symbol, always returning something renderable."""
@@ -61,6 +85,18 @@ class AppState:
             return get_history(replace(self.settings, ticker=symbol)), "live"
         except Exception:  # noqa: BLE001 — never leave the HUD blank
             return synthetic_close(seed=_seed(symbol)), "synthetic (data unavailable)"
+
+    def state_payload(self, symbol: str) -> dict:
+        """Full HUD payload for a symbol, memoised with a short TTL."""
+        cached = self._state_cache.get(symbol)
+        if cached and (time.monotonic() - cached[0]) < self.ttl:
+            return cached[1]
+        close, source = self.close_for(symbol)
+        payload = market_state(close, symbol, window=self.settings.window,
+                               threshold=self.settings.threshold, strategy=self.settings.strategy)
+        payload["dataSource"] = source
+        self._state_cache[symbol] = (time.monotonic(), payload)
+        return payload
 
 
 _ORDER_FIELDS = {
@@ -98,14 +134,38 @@ def create_app(state: AppState):
     def symbols():
         return {"symbols": DEFAULT_SYMBOLS}
 
+    @app.get("/api/search")
+    def search(q: str = ""):
+        q = (q or "").strip().upper()
+        if not q:
+            return {"results": DEFAULT_SYMBOLS}
+        starts = [s for s in SYMBOL_UNIVERSE if s.startswith(q)]
+        contains = [s for s in SYMBOL_UNIVERSE if q in s and s not in starts]
+        results = (starts + contains)[:12]
+        if q not in results:  # always allow the exact ticker the user typed
+            results = [q] + results
+        return {"results": results[:12]}
+
     @app.get("/api/state")
     def state_endpoint(symbol: str = "SPY"):
         symbol = symbol.strip().upper() or "SPY"
-        close, source = state.close_for(symbol)
-        payload = market_state(close, symbol, window=state.settings.window,
-                               threshold=state.settings.threshold, strategy=state.settings.strategy)
-        payload["dataSource"] = source
-        return payload
+        return state.state_payload(symbol)
+
+    @app.get("/api/quote")
+    def quote(symbol: str = "SPY"):
+        symbol = symbol.strip().upper() or "SPY"
+        cached = state._state_cache.get(symbol)
+        if cached and (time.monotonic() - cached[0]) < state.ttl:
+            p = cached[1]
+            return {"ticker": symbol, "lastPrice": p["lastPrice"], "regime": p["regime"]}
+        close, _ = state.close_for(symbol)
+        return quote_state(close, symbol, window=state.settings.window,
+                           threshold=state.settings.threshold)
+
+    @app.get("/api/news")
+    def news(symbol: str = "SPY"):
+        symbol = symbol.strip().upper() or "SPY"
+        return {"symbol": symbol, "items": fetch_news(state.settings, symbol, demo=state.demo)}
 
     # ── portfolio ────────────────────────────────────────────────────────────
     @app.get("/api/portfolio")

@@ -64,6 +64,10 @@
     text-transform:uppercase; display:flex; align-items:center; gap:8px}
   .panel h2 .tag{margin-left:auto; color:var(--dim); font-size:10px; letter-spacing:1px}
 
+  /* search */
+  .search{width:100%; margin-bottom:8px; background:#060f18; border:1px solid var(--edge);
+    color:var(--ink); border-radius:3px; padding:7px 9px; font-family:inherit; font-size:12px; letter-spacing:1px}
+  .search:focus{outline:none; border-color:var(--cyan); box-shadow:0 0 10px rgba(56,240,224,.2)}
   /* watchlist */
   .wl{display:flex; flex-direction:column; gap:4px}
   .wl button{
@@ -96,7 +100,28 @@
   .chart-head .price{font-size:26px; font-weight:700; color:var(--cyan2); text-shadow:var(--glow) var(--cyan)}
   .chart-head .sym{font-size:16px; font-weight:700; letter-spacing:2px}
   .chart-head .sig{margin-left:auto; font-size:12px; color:var(--dim)}
-  canvas.px{width:100%; height:340px; display:block}
+  .tfbar{display:flex; gap:3px; margin-left:14px}
+  .tfbar button{cursor:pointer; background:#08121c; border:1px solid var(--edge); color:var(--dim);
+    border-radius:3px; padding:3px 9px; font-family:inherit; font-size:11px; letter-spacing:1px}
+  .tfbar button:hover{border-color:var(--cyan); color:var(--ink)}
+  .tfbar button.on{color:var(--bg); background:var(--cyan); border-color:var(--cyan); font-weight:700}
+  canvas.px{width:100%; height:340px; display:block; transition:opacity .12s}
+  .loading canvas.px{opacity:.35}
+  /* news */
+  .news{display:flex; flex-direction:column; gap:6px; max-height:260px; overflow:auto}
+  .news .item{display:flex; gap:9px; align-items:flex-start; padding:7px 8px; border:1px solid var(--edge);
+    border-radius:3px; background:#08121c}
+  .news .item:hover{border-color:var(--cyan)}
+  .news .sent{flex:0 0 auto; font-size:9px; padding:2px 7px; border-radius:10px; letter-spacing:1px;
+    text-transform:uppercase; margin-top:1px}
+  .news .bullish{color:var(--green); border:1px solid rgba(47,224,138,.5); background:rgba(47,224,138,.08)}
+  .news .bearish{color:var(--red); border:1px solid rgba(255,77,94,.5); background:rgba(255,77,94,.08)}
+  .news .neutral{color:var(--dim); border:1px solid var(--edge)}
+  .news .txt{flex:1; min-width:0}
+  .news .hl{color:var(--ink); font-size:12px; line-height:1.4}
+  .news a.hl{text-decoration:none}
+  .news a.hl:hover{color:var(--cyan2)}
+  .news .meta{color:var(--dim); font-size:10px; margin-top:2px; letter-spacing:1px}
   .osc{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:10px}
   canvas.mini{width:100%; height:90px; display:block}
   .osc h3{margin:0 0 4px; font-size:10px; letter-spacing:2px; color:var(--dim); text-transform:uppercase}
@@ -181,7 +206,10 @@
     <!-- LEFT -->
     <div class="col">
       <div class="panel">
-        <h2>Watchlist <span class="tag">regime heatmap</span></h2>
+        <h2>Watchlist <span class="tag">search + heatmap</span></h2>
+        <input id="search" class="search" list="sugg" autocomplete="off" spellcheck="false"
+               placeholder="🔍 search any ticker — Enter">
+        <datalist id="sugg"></datalist>
         <div class="wl" id="watchlist"></div>
       </div>
       <div class="panel">
@@ -207,12 +235,21 @@
           <span class="sym" id="c-sym">SPY</span>
           <span class="price" id="c-price">—</span>
           <span class="sig" id="c-sig"></span>
+          <span class="tfbar" id="tfbar">
+            <button data-tf="21">1M</button><button data-tf="63">3M</button>
+            <button data-tf="126" class="on">6M</button><button data-tf="252">1Y</button>
+            <button data-tf="504">2Y</button>
+          </span>
         </div>
         <canvas class="px" id="chart" width="1600" height="680"></canvas>
         <div class="osc">
           <div><h3>Momentum (20d %)</h3><canvas class="mini" id="mom" width="760" height="180"></canvas></div>
           <div><h3>RSI (14)</h3><canvas class="mini" id="rsi" width="760" height="180"></canvas></div>
         </div>
+      </div>
+      <div class="panel newscard">
+        <h2>News · Sentiment <span class="tag" id="news-tag">—</span></h2>
+        <div id="news" class="news"><div class="muted">loading headlines…</div></div>
       </div>
     </div>
 
@@ -284,8 +321,12 @@ const C = { bull:'#2fe08a', bear:'#ff4d5e', sideways:'#7f9bb3', cyan:'#38f0e0', 
 let SYMBOL = 'SPY';
 let SIDE = 'buy';
 let CFG = {};
+let TF = 126;                 // timeframe in trading days (6M default)
+let LAST = null;              // full payload for the current symbol
+const STATE_CACHE = {};       // symbol -> payload (instant re-select)
 const $ = (id) => document.getElementById(id);
 const fmt = (v, d=2) => (v==null || isNaN(v)) ? '—' : Number(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
+const esc = (s) => (s==null?'':String(s)).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 function log(msg, cls='dim'){
   const el = $('log'); const line = document.createElement('div');
@@ -326,34 +367,62 @@ function buildWatchlist(syms){
 async function refreshWatchlist(syms){
   for(const s of syms){
     try{
-      const st = await api('/api/state?symbol='+encodeURIComponent(s));
+      const q = await api('/api/quote?symbol='+encodeURIComponent(s));   // cheap: price+regime only
       const b = document.querySelector(`.wl button[data-sym="${s}"]`); if(!b) continue;
-      const chip = b.querySelector('[data-r]'); chip.textContent = st.regime;
-      chip.className = 'rchip r-'+st.regime;
-      b.querySelector('[data-px]').textContent = fmt(st.lastPrice);
+      const chip = b.querySelector('[data-r]'); chip.textContent = q.regime;
+      chip.className = 'rchip r-'+q.regime;
+      b.querySelector('[data-px]').textContent = fmt(q.lastPrice);
     }catch(e){ /* ignore per-symbol */ }
   }
 }
+async function refreshQuote(s){ return refreshWatchlist([s]); }
+function ensureWatchlist(s){
+  if(document.querySelector(`.wl button[data-sym="${s}"]`)) return;
+  const wl=$('watchlist'); const b=document.createElement('button'); b.dataset.sym=s;
+  b.onclick=()=>selectSymbol(s);
+  b.innerHTML=`<span class="sym">${s}</span><span class="rchip r-sideways" data-r>—</span><span class="px" data-px>—</span>`;
+  wl.prepend(b); refreshQuote(s);
+}
 function selectSymbol(s){
-  SYMBOL = s;
+  s=(s||'').toUpperCase(); if(!s) return;
+  SYMBOL = s; ensureWatchlist(s);
   document.querySelectorAll('.wl button').forEach(b=>b.classList.toggle('active', b.dataset.sym===s));
   $('o-symbol').value = s;
-  loadState();
+  loadState(false); loadNews(); loadPortfolio();
+}
+
+/* ---------- timeframe (client-side slice — instant, no refetch) ---------- */
+function sliceChart(ch, n){
+  const s = a => a.slice(-n);
+  return { bars:s(ch.bars), ma20:s(ch.ma20), ma50:s(ch.ma50), rsi:s(ch.rsi), momentum:s(ch.momentum) };
+}
+function renderChart(){
+  if(!LAST) return;
+  const ch = sliceChart(LAST.chart, TF);
+  drawChart(ch); drawMini('mom', ch.momentum, 0); drawMini('rsi', ch.rsi, 50);
+}
+function setTF(n, btn){
+  TF = n;
+  document.querySelectorAll('#tfbar button').forEach(b=>b.classList.toggle('on', b===btn));
+  renderChart();
 }
 
 /* ---------- main state ---------- */
-async function loadState(){
-  let st;
-  try{ st = await api('/api/state?symbol='+encodeURIComponent(SYMBOL)); }
-  catch(e){ log('state error: '+e.message,'err'); return; }
+async function loadState(force){
+  const card = document.querySelector('.chartcard'); if(card) card.classList.add('loading');
+  let st = force ? null : STATE_CACHE[SYMBOL];
+  if(!st){
+    try{ st = await api('/api/state?symbol='+encodeURIComponent(SYMBOL)); STATE_CACHE[SYMBOL]=st; }
+    catch(e){ log('state error: '+e.message,'err'); if(card) card.classList.remove('loading'); return; }
+  }
+  if(st.ticker !== SYMBOL){ if(card) card.classList.remove('loading'); return; } // stale response
+  LAST = st;
   $('c-sym').textContent = st.ticker;
   $('c-price').textContent = fmt(st.lastPrice);
   $('v-source').textContent = (st.dataSource||'').toUpperCase();
   const sc = st.signal>0?C.bull:st.signal<0?C.bear:C.sideways;
-  $('c-sig').innerHTML = `regime <b style="color:${C[st.regime]}">${st.currentStateName}</b> · signal <b style="color:${sc}">${st.signal>0?'+':''}${fmt(st.signal,3)}</b> · target ${st.targetLabel}`;
-  drawChart(st.chart);
-  drawMini('mom', st.chart.momentum, 0);
-  drawMini('rsi', st.chart.rsi, 50);
+  $('c-sig').innerHTML = `regime <b style="color:${C[st.regime]}">${st.currentStateName}</b> · signal <b style="color:${sc}">${st.signal>0?'+':''}${fmt(st.signal,3)}</b> · target ${esc(st.targetLabel)}`;
+  renderChart();
   drawGauge(st.greedFear);
   drawMatrix(st);
   $('m-signal').textContent = (st.signal>0?'+':'')+fmt(st.signal,3);
@@ -361,6 +430,26 @@ async function loadState(){
   $('m-sharpe').textContent = st.metrics.sharpe==null?'—':fmt(st.metrics.sharpe,2);
   $('m-dd').textContent = st.metrics.maxDrawdown==null?'—':fmt(st.metrics.maxDrawdown*100,1)+'%';
   buildTicker(st);
+  if(card) card.classList.remove('loading');
+}
+
+/* ---------- news ---------- */
+async function loadNews(){
+  const el=$('news');
+  let d; try{ d=await api('/api/news?symbol='+encodeURIComponent(SYMBOL)); }
+  catch(e){ el.innerHTML='<div class="muted">news unavailable</div>'; $('news-tag').textContent='—'; return; }
+  const items=d.items||[];
+  $('news-tag').textContent = items.length ? (items[0].sample?'sample feed':'live · Alpaca') : '—';
+  if(!items.length){ el.innerHTML='<div class="muted">no headlines</div>'; return; }
+  el.innerHTML = items.map(n=>{
+    const t = n.createdAt ? new Date(n.createdAt).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+    const arrow = n.sentiment==='bullish'?'▲':n.sentiment==='bearish'?'▼':'■';
+    const hl = n.url ? `<a class="hl" href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.headline)}</a>`
+                     : `<span class="hl">${esc(n.headline)}</span>`;
+    const meta = [esc(n.source||''), t, n.sample?'sample':''].filter(Boolean).join(' · ');
+    return `<div class="item"><span class="sent ${n.sentiment}">${arrow} ${n.sentiment}</span>
+      <span class="txt">${hl}<div class="meta">${meta}</div></span></div>`;
+  }).join('');
 }
 
 /* ---------- charts ---------- */
@@ -548,15 +637,40 @@ async function removeAccount(name){
   catch(e){ log(e.message,'err'); }
 }
 
+/* ---------- wiring ---------- */
+function wireControls(){
+  // timeframe buttons
+  document.querySelectorAll('#tfbar button').forEach(b=>{
+    b.onclick = ()=>setTF(parseInt(b.dataset.tf,10), b);
+  });
+  // search: Enter selects any ticker; typing fetches suggestions
+  const search=$('search');
+  search.addEventListener('keydown', e=>{
+    if(e.key==='Enter'){ const v=search.value.trim().toUpperCase(); if(v){ selectSymbol(v); search.value=''; $('sugg').innerHTML=''; } }
+  });
+  let sTimer;
+  search.addEventListener('input', ()=>{
+    clearTimeout(sTimer);
+    sTimer=setTimeout(async ()=>{
+      const q=search.value.trim(); if(!q) return;
+      try{ const d=await api('/api/search?q='+encodeURIComponent(q));
+        $('sugg').innerHTML=(d.results||[]).map(s=>`<option value="${esc(s)}">`).join(''); }catch(e){}
+    }, 150);
+  });
+}
+
 /* ---------- boot ---------- */
 async function boot(){
   await loadConfig();
   syncOrderFields();
-  await loadState();
+  wireControls();
+  await loadState(false);
+  await loadNews();
   await loadAccounts();
   await loadPortfolio();
   log('terminal online — Markov regime engine ready','ok');
-  setInterval(()=>{ loadState(); loadPortfolio(); }, 15000);
+  setInterval(()=>{ loadState(true); loadPortfolio(); }, 15000);
+  setInterval(()=>{ loadNews(); }, 120000);
   setInterval(()=>refreshWatchlist(CFG.symbols||[]), 30000);
 }
 boot();

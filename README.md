@@ -107,11 +107,15 @@ markov-proof --demo --image proof.png     # offline synthetic demo
 
 ## Mamba Terminal — Web HUD (`mamba-web`)
 
-A neon, sci-fi **web dashboard** served by a local Python backend — the price
-chart with a Bull/Bear/Sideways **regime ribbon**, MA20/MA50, momentum + RSI
-oscillators, a **Greed/Fear gauge**, the honest transition matrix, a full
-**order-entry panel** (every Alpaca order type), and the **multi-account**
-switcher — all fed by the same Markov engine as the CLI.
+A neon, sci-fi **web dashboard** served by a local Python backend — a **symbol
+search** box (any ticker, not just the watchlist), the price chart with
+**timeframe** selectors (1M/3M/6M/1Y/2Y) and a Bull/Bear/Sideways **regime
+ribbon**, MA20/MA50, momentum + RSI oscillators, a **news + sentiment** feed
+(bullish/bearish, from Alpaca news when connected), a **Greed/Fear gauge**, the
+honest transition matrix, a full **order-entry panel** (every Alpaca order
+type), and the **multi-account** switcher — all fed by the same Markov engine as
+the CLI. Payloads are cached and timeframes slice client-side, so flipping
+between assets is instant.
 
 ```bash
 pip install -e ".[web]"

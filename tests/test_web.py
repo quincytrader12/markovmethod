@@ -137,3 +137,43 @@ def test_add_account_validation(tmp_path):
     client, _ = _paper_client(tmp_path)
     r = client.post("/api/accounts", json={"name": "bad/name", "key_id": "K", "secret": "S"})
     assert r.status_code == 400
+
+
+def test_quote_is_cheap_and_shaped():
+    client, _ = _demo_client()
+    q = client.get("/api/quote", params={"symbol": "nvda"}).json()
+    assert q["ticker"] == "NVDA"
+    assert q["regime"] in ("bull", "bear", "sideways")
+    assert isinstance(q["lastPrice"], (int, float))
+    assert "chart" not in q  # the cheap endpoint omits the heavy series
+
+
+def test_search_prefix_and_custom_ticker():
+    client, _ = _demo_client()
+    res = client.get("/api/search", params={"q": "aa"}).json()["results"]
+    assert "AAPL" in res and all(isinstance(s, str) for s in res)
+    # a ticker not in the bundled universe is still offered verbatim
+    custom = client.get("/api/search", params={"q": "ZZZZ"}).json()["results"]
+    assert custom[0] == "ZZZZ"
+
+
+def test_state_chart_is_wide_enough_for_timeframes():
+    client, _ = _demo_client()
+    bars = client.get("/api/state", params={"symbol": "SPY"}).json()["chart"]["bars"]
+    assert len(bars) >= 504  # enough history for the 2Y timeframe, sliced client-side
+
+
+def test_news_demo_sample_feed():
+    client, _ = _demo_client()
+    body = client.get("/api/news", params={"symbol": "TSLA"}).json()
+    items = body["items"]
+    assert body["symbol"] == "TSLA" and len(items) >= 1
+    assert all(i["sentiment"] in ("bullish", "bearish", "neutral") for i in items)
+    assert all(i["sample"] is True for i in items)  # offline → sample feed
+
+
+def test_news_sentiment_classifier():
+    from markov_hedge_fund_method.news import classify
+    assert classify("Company beats earnings and shares surge to record") == "bullish"
+    assert classify("Stock plunges after downgrade and lawsuit probe") == "bearish"
+    assert classify("Company holds annual meeting today") == "neutral"
