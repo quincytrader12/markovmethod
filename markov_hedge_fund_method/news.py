@@ -99,6 +99,38 @@ def _from_alpaca(settings, symbol: str, limit: int) -> list[dict]:
     return out
 
 
+def _from_yahoo_rss(symbol: str, limit: int) -> list[dict]:
+    """Free real headlines from Yahoo Finance's RSS feed — a plain XML GET with
+    no API key and no crumb/cookie dance, so it's far more reliable than the
+    yfinance news endpoint."""
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    url = (f"https://feeds.finance.yahoo.com/rss/2.0/headline"
+           f"?s={symbol}&region=US&lang=en-US")
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=6) as resp:
+        data = resp.read()
+    root = ET.fromstring(data)
+    out = []
+    for item in root.findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        if not title:
+            continue
+        desc = (item.findtext("description") or "").strip()
+        out.append({
+            "headline": title,
+            "source": "Yahoo Finance",
+            "url": (item.findtext("link") or "").strip(),
+            "createdAt": (item.findtext("pubDate") or "").strip(),
+            "sentiment": classify(f"{title} {desc}"),
+            "sample": False,
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _from_yfinance(symbol: str, limit: int) -> list[dict]:
     """Free real headlines from Yahoo Finance (no API key). Format is defensive
     because yfinance has changed its news schema across versions."""
@@ -145,20 +177,22 @@ def _from_yfinance(symbol: str, limit: int) -> list[dict]:
 def fetch_news(settings, symbol: str, demo: bool = False, limit: int = 6) -> list[dict]:
     """Recent headlines for `symbol`, tagged bullish/bearish/neutral.
 
-    Source order: Alpaca (if connected) → Yahoo Finance (free, no key) →
-    a deterministic sample feed (offline). Demo mode stays fully offline.
+    Source order: Alpaca (if connected) → Yahoo RSS (free, no key) → yfinance →
+    a deterministic sample feed. News is independent of the `demo` price-data
+    mode, so real headlines show whenever there's internet — even in demo. When
+    offline, every network source fails fast and the sample feed fills in.
     """
     symbol = (symbol or "").upper()
-    if not demo:
-        if getattr(settings, "has_credentials", False):
-            try:
-                items = _from_alpaca(settings, symbol, limit)
-                if items:
-                    return items
-            except Exception:  # noqa: BLE001
-                pass
+    if getattr(settings, "has_credentials", False):
         try:
-            items = _from_yfinance(symbol, limit)
+            items = _from_alpaca(settings, symbol, limit)
+            if items:
+                return items
+        except Exception:  # noqa: BLE001
+            pass
+    for source in (_from_yahoo_rss, _from_yfinance):
+        try:
+            items = source(symbol, limit)
             if items:
                 return items
         except Exception:  # noqa: BLE001

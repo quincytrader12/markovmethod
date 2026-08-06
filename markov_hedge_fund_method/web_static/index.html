@@ -43,6 +43,13 @@
   .chip{border:1px solid var(--edge); border-radius:3px; padding:3px 8px; color:var(--dim);
     font-size:11px; letter-spacing:1px; text-transform:uppercase; background:#08121c}
   .chip b{color:var(--ink)}
+  .mode-chip{display:flex; align-items:center; gap:6px}
+  .mode-chip select{background:#08121c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
+    font-family:inherit; font-size:11px; letter-spacing:1px; padding:2px 4px; cursor:pointer}
+  .mode-chip select:focus{outline:none; border-color:var(--cyan)}
+  .mode-chip.live{border-color:var(--red); box-shadow:0 0 10px rgba(255,77,94,.25)}
+  .mode-chip.live select{color:var(--red)}
+  .mode-chip.paper select{color:var(--amber)}
   .led{display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px;
     box-shadow:var(--glow) currentColor; vertical-align:middle}
   .led.on{color:var(--green)} .led.off{color:var(--red)} .led.warn{color:var(--amber)}
@@ -247,7 +254,14 @@
     <div class="brand">MAMBA&nbsp;TERMINAL<br><small>BY QUINCY GININDA · MARKOV REGIME ENGINE</small></div>
     <div class="spacer"></div>
     <span class="chip" id="chip-source">DATA <b id="v-source">—</b></span>
-    <span class="chip" id="chip-mode">MODE <b id="v-mode">—</b></span>
+    <span class="chip mode-chip" id="chip-mode">MODE
+      <select id="mode-sel" onchange="changeMode()"
+              title="dashboard = read-only · paper/live place orders (needs a connected account)">
+        <option value="dashboard">DASHBOARD</option>
+        <option value="paper">PAPER</option>
+        <option value="live">LIVE</option>
+      </select>
+    </span>
     <span class="chip" id="chip-acct">ACCT <b id="v-acct">none</b></span>
     <span class="chip"><span class="led off" id="led-conn"></span><b id="v-conn">offline</b></span>
     <span class="chip clock" id="clock">--:--:--</span>
@@ -427,9 +441,27 @@ setInterval(()=>{ $('clock').textContent = new Date().toLocaleTimeString('en-GB'
 async function loadConfig(){
   CFG = await api('/api/config');
   SYMBOL = CFG.defaultSymbol || 'SPY';
-  $('v-mode').textContent = CFG.mode.toUpperCase();
+  applyModeChip();
   $('v-source').textContent = CFG.demo ? 'DEMO' : 'LIVE';
   buildWatchlist(CFG.symbols || ['SPY']);
+}
+function applyModeChip(){
+  const sel=$('mode-sel'); if(sel) sel.value = CFG.mode;
+  const chip=$('chip-mode'); if(chip){ chip.classList.remove('live','paper'); if(CFG.mode!=='dashboard') chip.classList.add(CFG.mode); }
+}
+async function changeMode(){
+  const m=$('mode-sel').value;
+  if(m==='live' && !confirm('LIVE mode places REAL-MONEY orders on a connected live account. Continue?')){
+    $('mode-sel').value=CFG.mode; return;
+  }
+  try{
+    CFG = await api('/api/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
+    applyModeChip();
+    const note = m==='dashboard' ? 'read-only — no orders will be placed'
+                : (CFG.connected ? 'orders will be sent to Alpaca' : 'connect an account under Accounts to place orders');
+    log(`mode → ${m.toUpperCase()} · ${note}`, m==='dashboard'?'dim':'warn');
+    loadPortfolio();
+  }catch(e){ log('could not change mode: '+e.message,'err'); $('mode-sel').value=CFG.mode; }
 }
 
 /* ---------- watchlist ---------- */

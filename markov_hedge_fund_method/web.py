@@ -71,6 +71,7 @@ class AppState:
         self.accounts = AccountStore()
         self.broker = None if demo else make_broker(settings)
         self._state_cache: dict[str, tuple[float, dict]] = {}
+        self._news_cache: dict[str, tuple[float, list]] = {}
         self._alpaca_symbols: set[str] | None = None
         self.ttl = self.CACHE_TTL if demo else 60.0  # live data goes stale sooner
 
@@ -151,6 +152,16 @@ def create_app(state: AppState):
     def symbols():
         return {"symbols": DEFAULT_SYMBOLS}
 
+    @app.post("/api/mode")
+    async def set_mode(request: Request):
+        data = await request.json()
+        m = str(data.get("mode", "")).strip().lower()
+        try:
+            state.settings.mode = Mode(m)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"invalid mode: {m!r}")
+        return config()
+
     @app.get("/api/search")
     def search(q: str = ""):
         q = (q or "").strip().upper()
@@ -201,7 +212,13 @@ def create_app(state: AppState):
     @app.get("/api/news")
     def news(symbol: str = "SPY"):
         symbol = symbol.strip().upper() or "SPY"
-        return {"symbol": symbol, "items": fetch_news(state.settings, symbol, demo=state.demo)}
+        cached = state._news_cache.get(symbol)
+        if cached and (time.monotonic() - cached[0]) < 300.0:
+            items = cached[1]
+        else:
+            items = fetch_news(state.settings, symbol, demo=state.demo)
+            state._news_cache[symbol] = (time.monotonic(), items)
+        return {"symbol": symbol, "items": items}
 
     # ── portfolio ────────────────────────────────────────────────────────────
     @app.get("/api/portfolio")

@@ -211,6 +211,17 @@ def test_search_returns_connected_flag_and_letter_matches():
     assert any(s.startswith("A") for s in d["results"])  # letter search lists A-tickers
 
 
+def test_mode_switch_endpoint():
+    state = AppState(Settings(ticker="SPY", mode=Mode.DASHBOARD), demo=True)
+    client = TestClient(create_app(state))
+    assert client.get("/api/config").json()["mode"] == "dashboard"
+    r = client.post("/api/mode", json={"mode": "paper"})
+    assert r.status_code == 200
+    assert r.json()["mode"] == "paper" and r.json()["canTrade"] is True
+    assert state.settings.mode is Mode.PAPER            # backend state actually changed
+    assert client.post("/api/mode", json={"mode": "turbo"}).status_code == 400
+
+
 def test_validate_offline_is_unverified():
     client, _ = _demo_client()
     v = client.get("/api/validate", params={"symbol": "ZZZZ"}).json()
