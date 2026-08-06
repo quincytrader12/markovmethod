@@ -311,7 +311,6 @@
         <h2>Price · Regime Ribbon <span class="tag">MA20 · MA50</span></h2>
         <div class="chart-head">
           <span class="sym" id="c-sym">SPY</span>
-          <span class="cname" id="c-name"></span>
           <span class="price" id="c-price">—</span>
           <span class="sig" id="c-sig"></span>
           <span class="tfbar" id="tfbar">
@@ -569,8 +568,6 @@ async function loadState(force){
   if(st.ticker !== SYMBOL){ if(card) card.classList.remove('loading'); return; } // stale response
   LAST = st;
   $('c-sym').textContent = st.ticker;
-  $('c-sym').title = st.name || st.ticker;
-  $('c-name').textContent = st.name || '';
   $('c-price').textContent = fmt(st.lastPrice);
   $('v-source').textContent = (st.dataSource||'').toUpperCase();
   const sc = st.signal>0?C.bull:st.signal<0?C.bear:C.sideways;
