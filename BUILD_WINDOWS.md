@@ -80,6 +80,38 @@ live). You can save several named accounts and switch between them at runtime.
 | Want a totally clean rebuild | Delete the `.buildenv`, `build`, and `dist` folders, then run `build.bat` again. |
 | Antivirus flags the fresh `.exe` | Common for brand-new unsigned PyInstaller apps; allow/whitelist it, or add a code-signing certificate later. |
 
+## Prefer a cloud build with a real installer? (AppVeyor)
+
+If you'd rather not build locally, **AppVeyor** is a free cloud CI (separate
+from GitHub Actions) that builds the apps *and* a proper installer, then gives
+you download links — no Python or Inno Setup needed on your PC. The repo
+already includes the config (`appveyor.yml` + `installer/mamba.iss`).
+
+1. Go to <https://ci.appveyor.com/signup> and click **Sign in with GitHub**
+   (free "Individual" plan; the repo is public so no card needed).
+2. Click **New Project** → find **quincytrader12/markovmethod** → **Add**.
+3. Click **New Build** (or just push a commit). AppVeyor spins up a Windows
+   machine, builds everything, and runs Inno Setup.
+4. When it's green, open the build → **Artifacts** tab and download:
+   - **`MambaTerminalSetup.exe`** — the installer (double-click → Next → Finish;
+     adds Start Menu + desktop shortcuts and an uninstaller).
+   - `mamba-web.exe` / `mamba-terminal.exe` — the raw executables, if you want
+     them separately.
+
+Every future push to the branch rebuilds these automatically.
+
+### Building the installer locally instead
+
+If you're building locally (Steps 1–3 above) and also want the installer, just
+install **Inno Setup 6** (free, <https://jrsoftware.org/isdl.php>), then run:
+
+```
+build.bat
+iscc installer\mamba.iss
+```
+
+The installer appears at `installer_output\MambaTerminalSetup.exe`.
+
 ## Just want to try it without building an .exe?
 
 If you only want to *use* the web HUD (not distribute an installer), you don't
