@@ -74,33 +74,93 @@ def _synthetic(symbol: str, limit: int) -> list[dict]:
     return out
 
 
-def fetch_news(settings, symbol: str, demo: bool = False, limit: int = 6) -> list[dict]:
-    """Recent headlines for `symbol` with a bullish/bearish/neutral tag."""
-    symbol = (symbol or "").upper()
-    if demo or not getattr(settings, "has_credentials", False):
-        return _synthetic(symbol, limit)
-    try:
-        from alpaca.data.historical.news import NewsClient
-        from alpaca.data.requests import NewsRequest
+def _from_alpaca(settings, symbol: str, limit: int) -> list[dict]:
+    from alpaca.data.historical.news import NewsClient
+    from alpaca.data.requests import NewsRequest
 
-        client = NewsClient(settings.api_key, settings.api_secret)
-        res = client.get_news(NewsRequest(symbols=[symbol], limit=limit))
-        items = getattr(res, "news", None)
-        if items is None and hasattr(res, "data"):
-            items = res.data.get("news", [])
-        out = []
-        for n in (items or [])[:limit]:
-            head = getattr(n, "headline", "") or ""
-            summary = getattr(n, "summary", "") or ""
-            created = getattr(n, "created_at", None)
-            out.append({
-                "headline": head,
-                "source": getattr(n, "source", "") or "",
-                "url": getattr(n, "url", "") or "",
-                "createdAt": created.isoformat() if created else "",
-                "sentiment": classify(f"{head} {summary}"),
-                "sample": False,
-            })
-        return out or _synthetic(symbol, limit)
-    except Exception:  # noqa: BLE001 — never leave the slot empty
-        return _synthetic(symbol, limit)
+    client = NewsClient(settings.api_key, settings.api_secret)
+    res = client.get_news(NewsRequest(symbols=[symbol], limit=limit))
+    items = getattr(res, "news", None)
+    if items is None and hasattr(res, "data"):
+        items = res.data.get("news", [])
+    out = []
+    for n in (items or [])[:limit]:
+        head = getattr(n, "headline", "") or ""
+        summary = getattr(n, "summary", "") or ""
+        created = getattr(n, "created_at", None)
+        out.append({
+            "headline": head,
+            "source": getattr(n, "source", "") or "Alpaca",
+            "url": getattr(n, "url", "") or "",
+            "createdAt": created.isoformat() if created else "",
+            "sentiment": classify(f"{head} {summary}"),
+            "sample": False,
+        })
+    return out
+
+
+def _from_yfinance(symbol: str, limit: int) -> list[dict]:
+    """Free real headlines from Yahoo Finance (no API key). Format is defensive
+    because yfinance has changed its news schema across versions."""
+    import yfinance as yf
+    from datetime import datetime, timezone
+
+    raw = yf.Ticker(symbol).news or []
+    out = []
+    for it in raw:
+        content = it.get("content") if isinstance(it.get("content"), dict) else it
+        title = content.get("title") or it.get("title") or ""
+        if not title:
+            continue
+        prov = content.get("provider")
+        source = (prov.get("displayName") if isinstance(prov, dict) else None) \
+            or it.get("publisher") or "Yahoo Finance"
+        url = ""
+        for key in ("canonicalUrl", "clickThroughUrl"):
+            u = content.get(key)
+            if isinstance(u, dict) and u.get("url"):
+                url = u["url"]
+                break
+        url = url or it.get("link") or ""
+        created = ""
+        pub = content.get("pubDate") or content.get("displayTime")
+        if pub:
+            created = str(pub)
+        elif it.get("providerPublishTime"):
+            created = datetime.fromtimestamp(it["providerPublishTime"], timezone.utc).isoformat()
+        summary = content.get("summary") or content.get("description") or ""
+        out.append({
+            "headline": title,
+            "source": source,
+            "url": url,
+            "createdAt": created,
+            "sentiment": classify(f"{title} {summary}"),
+            "sample": False,
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def fetch_news(settings, symbol: str, demo: bool = False, limit: int = 6) -> list[dict]:
+    """Recent headlines for `symbol`, tagged bullish/bearish/neutral.
+
+    Source order: Alpaca (if connected) → Yahoo Finance (free, no key) →
+    a deterministic sample feed (offline). Demo mode stays fully offline.
+    """
+    symbol = (symbol or "").upper()
+    if not demo:
+        if getattr(settings, "has_credentials", False):
+            try:
+                items = _from_alpaca(settings, symbol, limit)
+                if items:
+                    return items
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            items = _from_yfinance(symbol, limit)
+            if items:
+                return items
+        except Exception:  # noqa: BLE001
+            pass
+    return _synthetic(symbol, limit)

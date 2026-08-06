@@ -203,6 +203,28 @@ def test_state_has_forecast_and_timeline_and_equity():
     assert 0.0 <= m["winRate"] <= 1.0
 
 
+def test_search_returns_connected_flag_and_letter_matches():
+    client, _ = _demo_client()
+    d = client.get("/api/search", params={"q": "A"}).json()
+    assert d["connected"] is False                       # demo → not Alpaca-connected
+    assert all(isinstance(s, str) for s in d["results"])
+    assert any(s.startswith("A") for s in d["results"])  # letter search lists A-tickers
+
+
+def test_validate_offline_is_unverified():
+    client, _ = _demo_client()
+    v = client.get("/api/validate", params={"symbol": "ZZZZ"}).json()
+    # offline we can't check Alpaca, so we don't block (source=unverified)
+    assert v["valid"] is True and v["source"] == "unverified"
+
+
+def test_news_sentiment_from_headline_text():
+    # bullish/bearish wording drives the tag regardless of source
+    from markov_hedge_fund_method.news import classify
+    assert classify("shares soar to record high after upgrade") == "bullish"
+    assert classify("shares tumble on downgrade and probe") == "bearish"
+
+
 def test_forecast_converges_to_stationary():
     # far-horizon forecast should approach the stationary distribution
     from markov_hedge_fund_method.market_data import synthetic_close

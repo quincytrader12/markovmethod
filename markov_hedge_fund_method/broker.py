@@ -195,6 +195,31 @@ class AlpacaBroker:
         responses = self.client.cancel_orders()
         return len(responses) if responses is not None else 0
 
+    # ── asset universe (for search + validation) ────────────────────────────
+    def get_asset(self, symbol: str) -> dict | None:
+        """Look up a single Alpaca asset. None when it doesn't exist."""
+        try:
+            a = self.client.get_asset(symbol.upper())
+        except Exception:  # noqa: BLE001 — unknown symbol / API error
+            return None
+        return {
+            "symbol": a.symbol,
+            "name": getattr(a, "name", "") or "",
+            "tradable": bool(getattr(a, "tradable", False)),
+            "fractionable": bool(getattr(a, "fractionable", False)),
+            "status": str(getattr(a.status, "value", getattr(a, "status", ""))),
+        }
+
+    def list_tradable_symbols(self) -> list[str]:
+        """All active, tradable US-equity symbols (for the search universe)."""
+        from alpaca.trading.enums import AssetClass, AssetStatus
+        from alpaca.trading.requests import GetAssetsRequest
+
+        assets = self.client.get_all_assets(
+            GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY)
+        )
+        return sorted({a.symbol for a in assets if getattr(a, "tradable", False)})
+
 
 def make_broker(settings: Settings) -> AlpacaBroker | None:
     """Return a broker when credentials exist, else None (pure-data mode)."""

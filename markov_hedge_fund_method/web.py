@@ -71,11 +71,28 @@ class AppState:
         self.accounts = AccountStore()
         self.broker = None if demo else make_broker(settings)
         self._state_cache: dict[str, tuple[float, dict]] = {}
+        self._alpaca_symbols: set[str] | None = None
         self.ttl = self.CACHE_TTL if demo else 60.0  # live data goes stale sooner
 
     def reconnect(self) -> None:
         self.broker = None if self.demo else make_broker(self.settings)
-        self._state_cache.clear()  # a new account may change the data source
+        self._state_cache.clear()   # a new account may change the data source
+        self._alpaca_symbols = None  # and a different asset universe
+
+    def alpaca_symbols(self) -> set[str] | None:
+        """Set of tradable Alpaca symbols when connected (cached), else None."""
+        if self.broker is None:
+            return None
+        if self._alpaca_symbols is None:
+            try:
+                self._alpaca_symbols = set(self.broker.list_tradable_symbols())
+            except Exception:  # noqa: BLE001 — cache empty to avoid refetch storms
+                self._alpaca_symbols = set()
+        return self._alpaca_symbols or None
+
+    def search_universe(self) -> list[str]:
+        al = self.alpaca_symbols()
+        return sorted(al) if al else SYMBOL_UNIVERSE
 
     def close_for(self, symbol: str):
         """Close series for a symbol, always returning something renderable."""
@@ -137,14 +154,33 @@ def create_app(state: AppState):
     @app.get("/api/search")
     def search(q: str = ""):
         q = (q or "").strip().upper()
+        connected = state.alpaca_symbols() is not None
+        universe = state.search_universe()
         if not q:
-            return {"results": DEFAULT_SYMBOLS}
-        starts = [s for s in SYMBOL_UNIVERSE if s.startswith(q)]
-        contains = [s for s in SYMBOL_UNIVERSE if q in s and s not in starts]
-        results = (starts + contains)[:12]
-        if q not in results:  # always allow the exact ticker the user typed
+            return {"results": DEFAULT_SYMBOLS, "connected": connected}
+        starts = [s for s in universe if s.startswith(q)]
+        contains = [s for s in universe if q in s and s not in starts]
+        results = (starts + contains)[:30]
+        # Offline we can't verify against Alpaca, so allow the exact ticker typed.
+        if not connected and q not in results:
             results = [q] + results
-        return {"results": results[:12]}
+        return {"results": results[:30], "connected": connected}
+
+    @app.get("/api/validate")
+    def validate(symbol: str = ""):
+        symbol = (symbol or "").strip().upper()
+        if not symbol:
+            return {"valid": False, "reason": "empty"}
+        al = state.alpaca_symbols()
+        if al is not None:
+            if symbol in al:
+                asset = state.broker.get_asset(symbol)
+                return {"valid": True, "source": "alpaca",
+                        "tradable": asset["tradable"] if asset else True,
+                        "name": asset["name"] if asset else ""}
+            return {"valid": False, "source": "alpaca",
+                    "reason": f"{symbol} is not an Alpaca-tradable symbol"}
+        return {"valid": True, "source": "unverified"}  # not connected — can't check
 
     @app.get("/api/state")
     def state_endpoint(symbol: str = "SPY"):

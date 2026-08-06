@@ -19,7 +19,7 @@
       var(--bg);
     color:var(--ink);
     font-family:"JetBrains Mono","DejaVu Sans Mono","Consolas",ui-monospace,monospace;
-    font-size:13px; overflow-x:hidden;
+    font-size:12px; overflow:hidden;
   }
   /* scanline overlay */
   body::after{
@@ -28,11 +28,11 @@
     mix-blend-mode:overlay; opacity:.5;
   }
   a{color:var(--cyan)}
-  .app{display:flex; flex-direction:column; min-height:100vh}
+  .app{display:flex; flex-direction:column; height:100vh; overflow:hidden}
 
   /* top bar */
   .topbar{
-    display:flex; align-items:center; gap:14px; padding:10px 16px;
+    display:flex; align-items:center; gap:14px; padding:8px 16px; flex:0 0 auto;
     border-bottom:1px solid var(--edge);
     background:linear-gradient(180deg,#0b1622, #070d15);
   }
@@ -49,29 +49,52 @@
   .clock{color:var(--cyan2); letter-spacing:2px}
 
   /* layout */
-  .grid{display:grid; grid-template-columns:280px 1fr 340px; gap:12px; padding:12px; flex:1}
-  @media (max-width:1200px){ .grid{grid-template-columns:1fr} }
-  .col{display:flex; flex-direction:column; gap:12px; min-width:0}
+  .grid{display:grid; grid-template-columns:288px 1fr 336px; gap:9px; padding:8px; flex:1 1 auto; min-height:0}
+  @media (max-width:1200px){ .grid{grid-template-columns:1fr; overflow-y:auto} }
+  .col{display:flex; flex-direction:column; gap:8px; min-width:0; min-height:0; overflow-y:auto; overflow-x:hidden}
 
   .panel{
     position:relative; background:linear-gradient(180deg,var(--panel),var(--panel2));
-    border:1px solid var(--edge); border-radius:4px; padding:12px;
+    border:1px solid var(--edge); border-radius:4px; padding:9px 11px;
   }
   .panel::before,.panel::after{content:""; position:absolute; width:12px; height:12px; pointer-events:none}
   .panel::before{top:-1px; left:-1px; border-top:2px solid var(--cyan); border-left:2px solid var(--cyan)}
   .panel::after{bottom:-1px; right:-1px; border-bottom:2px solid var(--cyan); border-right:2px solid var(--cyan)}
-  .panel h2{margin:0 0 10px; font-size:11px; letter-spacing:2px; color:var(--cyan);
-    text-transform:uppercase; display:flex; align-items:center; gap:8px}
+  .panel h2{margin:0 0 7px; font-size:11px; letter-spacing:2px; color:var(--cyan);
+    text-transform:uppercase; display:flex; align-items:center; gap:8px; flex:0 0 auto}
   .panel h2 .tag{margin-left:auto; color:var(--dim); font-size:10px; letter-spacing:1px}
   /* a panel that expands to consume its column's leftover height */
   .panel.grow{flex:1 1 auto; display:flex; flex-direction:column}
 
   /* search */
-  .search{width:100%; margin-bottom:8px; background:#060f18; border:1px solid var(--edge);
+  .search-wrap{position:relative; margin-bottom:8px}
+  .search{width:100%; background:#060f18; border:1px solid var(--edge);
     color:var(--ink); border-radius:3px; padding:7px 9px; font-family:inherit; font-size:12px; letter-spacing:1px}
   .search:focus{outline:none; border-color:var(--cyan); box-shadow:0 0 10px rgba(56,240,224,.2)}
+  .sugg-list{position:absolute; left:0; right:0; top:34px; z-index:60; background:#08131f;
+    border:1px solid var(--cyan); border-radius:3px; max-height:240px; overflow-y:auto; display:none;
+    box-shadow:0 8px 24px rgba(0,0,0,.55)}
+  .sugg-list.open{display:block}
+  .sugg-list .s{display:flex; align-items:center; gap:8px; padding:6px 9px; cursor:pointer;
+    font-size:12px; letter-spacing:1px}
+  .sugg-list .s:hover, .sugg-list .s.hl{background:#0e2233}
+  .sugg-list .s .t{font-weight:700; color:var(--ink)}
+  .sugg-list .s .m{margin-left:auto; color:var(--dim); font-size:9px; text-transform:uppercase}
+  .sugg-list .empty{padding:8px 9px; color:var(--dim); font-size:11px}
   /* watchlist */
-  .wl{display:flex; flex-direction:column; gap:4px}
+  .wl{display:flex; flex-direction:column; gap:3px; max-height:12vh; overflow-y:auto}
+  .wl .item{position:relative; display:flex; align-items:center; gap:8px; width:100%;
+    background:#08121c; border:1px solid var(--edge); border-radius:3px}
+  .wl .item.active{border-color:var(--cyan); background:#0c1b28; box-shadow:0 0 10px rgba(56,240,224,.15)}
+  .wl .pick{
+    display:flex; align-items:center; gap:8px; flex:1; text-align:left; cursor:pointer;
+    background:transparent; border:0; color:var(--ink); border-radius:3px;
+    padding:6px 8px; font-family:inherit; font-size:12px; letter-spacing:1px;
+  }
+  .wl .rm{cursor:pointer; background:transparent; border:0; color:var(--dim2); font-size:12px;
+    padding:0 8px 0 0; opacity:0}
+  .wl .item:hover .rm{opacity:1}
+  .wl .rm:hover{color:var(--red)}
   .wl button{
     display:flex; align-items:center; gap:8px; width:100%; text-align:left; cursor:pointer;
     background:#08121c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
@@ -87,12 +110,12 @@
   .r-sideways{color:var(--dim); border:1px solid var(--edge); background:#0a151f}
 
   /* gauge */
-  .gauge-wrap{display:flex; flex-direction:column; align-items:center; gap:6px}
-  #gauge{width:100%; max-width:230px; height:130px}
-  .gf-score{font-size:30px; font-weight:700; letter-spacing:1px}
-  .gf-label{letter-spacing:2px; text-transform:uppercase; font-size:12px}
-  .gf-bars{width:100%; display:flex; flex-direction:column; gap:5px; margin-top:8px}
-  .gf-bar{display:grid; grid-template-columns:64px 1fr 34px; align-items:center; gap:8px; font-size:10px; color:var(--dim)}
+  .gauge-wrap{display:flex; flex-direction:column; align-items:center; gap:2px}
+  #gauge{width:100%; max-width:200px; height:74px}
+  .gf-score{font-size:23px; font-weight:700; letter-spacing:1px}
+  .gf-label{letter-spacing:2px; text-transform:uppercase; font-size:11px}
+  .gf-bars{width:100%; display:flex; flex-direction:column; gap:3px; margin-top:5px}
+  .gf-bar{display:grid; grid-template-columns:64px 1fr 30px; align-items:center; gap:8px; font-size:9px; color:var(--dim)}
   .gf-track{height:6px; background:#0a1622; border:1px solid var(--edge); border-radius:4px; overflow:hidden}
   .gf-fill{height:100%; background:linear-gradient(90deg,var(--red),var(--amber),var(--green))}
 
@@ -107,10 +130,10 @@
     border-radius:3px; padding:3px 9px; font-family:inherit; font-size:11px; letter-spacing:1px}
   .tfbar button:hover{border-color:var(--cyan); color:var(--ink)}
   .tfbar button.on{color:var(--bg); background:var(--cyan); border-color:var(--cyan); font-weight:700}
-  canvas.px{width:100%; flex:1 1 auto; min-height:280px; height:auto; display:block; transition:opacity .12s}
+  canvas.px{width:100%; flex:1 1 0; min-height:110px; height:auto; display:block; transition:opacity .12s}
   .loading canvas.px{opacity:.35}
   /* news */
-  .news{display:flex; flex-direction:column; gap:6px; max-height:260px; overflow:auto}
+  .news{display:flex; flex-direction:column; gap:5px; max-height:13vh; overflow:auto; flex:0 0 auto}
   .news .item{display:flex; gap:9px; align-items:flex-start; padding:7px 8px; border:1px solid var(--edge);
     border-radius:3px; background:#08121c}
   .news .item:hover{border-color:var(--cyan)}
@@ -124,18 +147,18 @@
   .news a.hl{text-decoration:none}
   .news a.hl:hover{color:var(--cyan2)}
   .news .meta{color:var(--dim); font-size:10px; margin-top:2px; letter-spacing:1px}
-  .osc{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:10px}
-  canvas.mini{width:100%; height:90px; display:block}
-  .osc h3{margin:0 0 4px; font-size:10px; letter-spacing:2px; color:var(--dim); text-transform:uppercase}
+  .osc{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:6px; flex:0 0 auto}
+  canvas.mini{width:100%; height:56px; display:block}
+  .osc h3{margin:0 0 2px; font-size:10px; letter-spacing:2px; color:var(--dim); text-transform:uppercase}
 
   /* matrix */
   table.mx{width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums}
-  table.mx th,table.mx td{border:1px solid var(--edge); padding:6px 4px; text-align:center; font-size:11px}
+  table.mx th,table.mx td{border:1px solid var(--edge); padding:4px 4px; text-align:center; font-size:11px}
   table.mx th{color:var(--dim); letter-spacing:1px; font-weight:400}
   td.diag{font-weight:700}
   .stat-row{display:flex; gap:8px; margin-top:8px}
-  .stat{flex:1; background:#08121c; border:1px solid var(--edge); border-radius:3px; padding:8px; text-align:center}
-  .stat .v{font-size:16px; font-weight:700; color:var(--cyan2)}
+  .stat{flex:1; background:#08121c; border:1px solid var(--edge); border-radius:3px; padding:5px; text-align:center}
+  .stat .v{font-size:15px; font-weight:700; color:var(--cyan2)}
   .stat .k{font-size:9px; color:var(--dim); letter-spacing:1px; text-transform:uppercase; margin-top:2px}
 
   /* forms */
@@ -143,10 +166,12 @@
   label.fld{display:flex; flex-direction:column; gap:2px; font-size:9px; color:var(--dim); letter-spacing:1px; text-transform:uppercase}
   input,select{
     background:#08121c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
-    padding:5px 6px; font-family:inherit; font-size:12px; width:100%;
+    padding:4px 6px; font-family:inherit; font-size:12px; width:100%;
   }
   input:focus,select:focus{outline:none; border-color:var(--cyan); box-shadow:0 0 8px rgba(56,240,224,.2)}
   .row{display:flex; gap:6px; margin-top:6px}
+  .afford{font-size:11px; color:var(--dim); margin-top:6px; display:flex; gap:12px; flex-wrap:wrap; flex:0 0 auto}
+  .afford b{color:var(--cyan2)}
   button.act{
     flex:1; cursor:pointer; border-radius:3px; padding:7px; font-family:inherit; font-weight:700;
     letter-spacing:1px; border:1px solid; background:#08121c; text-transform:uppercase; font-size:11px;
@@ -164,9 +189,9 @@
   .seg button.on.sell{background:var(--red); border-color:var(--red)}
 
   /* log + accounts */
-  .log{height:96px; overflow:auto; background:#060d15; border:1px solid var(--edge); border-radius:3px;
+  .log{height:60px; overflow:auto; background:#060d15; border:1px solid var(--edge); border-radius:3px;
     padding:6px; font-size:11px; line-height:1.5}
-  .panel.grow .log{flex:1 1 auto; height:auto; min-height:96px}
+  .panel.grow .log{flex:1 1 auto; height:auto; min-height:54px}
   .log .ok{color:var(--green)} .log .err{color:var(--red)} .log .warn{color:var(--amber)} .log .dim{color:var(--dim)}
   .acct{display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid var(--edge);
     border-radius:3px; background:#08121c; margin-bottom:4px; font-size:12px}
@@ -183,7 +208,7 @@
 
   /* long-run + timeline */
   .lr{display:flex; align-items:center; gap:10px}
-  #statdonut{width:100px; height:100px; flex:0 0 auto}
+  #statdonut{width:82px; height:82px; flex:0 0 auto}
   .statlegend{flex:1; display:flex; flex-direction:column; gap:5px; font-size:11px}
   .statlegend .row2{display:flex; align-items:center; gap:7px}
   .statlegend .dot{width:9px; height:9px; border-radius:2px; box-shadow:var(--glow) currentColor}
@@ -194,9 +219,9 @@
   .timeline .flip{color:var(--dim); display:flex; gap:6px}
   .timeline .flip .d{color:var(--dim2)}
   /* center bottom split */
-  .cbottom{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+  .cbottom{display:grid; grid-template-columns:1fr 1fr; gap:10px; flex:0 0 auto}
   @media (max-width:900px){ .cbottom{grid-template-columns:1fr} }
-  canvas.equity{width:100%; height:120px; display:block}
+  canvas.equity{width:100%; height:82px; display:block}
   /* forecast */
   .forecast{display:flex; flex-direction:column; gap:10px}
   .fc-row{display:grid; grid-template-columns:42px 1fr; gap:8px; align-items:center}
@@ -205,7 +230,7 @@
   .fc-seg{display:flex; align-items:center; justify-content:center; color:#04070d; font-weight:700; min-width:0; overflow:hidden}
   .fc-seg.bear{background:var(--red)} .fc-seg.sideways{background:var(--sideways)} .fc-seg.bull{background:var(--green)}
   /* ticker */
-  .ticker{border-top:1px solid var(--edge); background:#070d15; overflow:hidden; white-space:nowrap; padding:6px 0}
+  .ticker{border-top:1px solid var(--edge); background:#070d15; overflow:hidden; white-space:nowrap; padding:6px 0; flex:0 0 auto}
   .ticker .track{display:inline-block; padding-left:100%; animation:scroll 40s linear infinite}
   .ticker .it{margin:0 26px; letter-spacing:1px; font-size:12px}
   @keyframes scroll{to{transform:translateX(-100%)}}
@@ -233,9 +258,11 @@
     <div class="col">
       <div class="panel">
         <h2>Watchlist <span class="tag">search + heatmap</span></h2>
-        <input id="search" class="search" list="sugg" autocomplete="off" spellcheck="false"
-               placeholder="🔍 search any ticker — Enter">
-        <datalist id="sugg"></datalist>
+        <div class="search-wrap">
+          <input id="search" class="search" autocomplete="off" spellcheck="false"
+                 placeholder="🔍 type a letter to find tickers">
+          <div id="sugg-list" class="sugg-list"></div>
+        </div>
         <div class="wl" id="watchlist"></div>
       </div>
       <div class="panel">
@@ -341,9 +368,11 @@
           <label class="fld" data-need="legs">Take-profit<input id="o-tp" type="number" step="any"></label>
           <label class="fld" data-need="legs">Stop-loss<input id="o-slstop" type="number" step="any"></label>
         </div>
+        <div class="afford" id="afford"><span class="muted">price —</span></div>
         <div class="row">
           <button class="act buy" id="btn-submit" onclick="submitOrder()">Submit</button>
-          <button class="act ghost" onclick="cancelAll()">Cancel all</button>
+          <button class="act ghost" onclick="fillMax()" title="fill max affordable qty">Max</button>
+          <button class="act ghost" onclick="cancelAll()">Cancel</button>
         </div>
         <div class="log" id="log" style="margin-top:8px"></div>
       </div>
@@ -372,6 +401,7 @@ let SIDE = 'buy';
 let CFG = {};
 let TF = 126;                 // timeframe in trading days (6M default)
 let LAST = null;              // full payload for the current symbol
+let BP = null;                // buying power ($) when an account is connected
 const STATE_CACHE = {};       // symbol -> payload (instant re-select)
 const $ = (id) => document.getElementById(id);
 const fmt = (v, d=2) => (v==null || isNaN(v)) ? '—' : Number(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
@@ -403,41 +433,76 @@ async function loadConfig(){
 }
 
 /* ---------- watchlist ---------- */
+function wlItemHTML(s){
+  return `<div class="item" data-sym="${s}">
+    <button class="pick" onclick="selectSymbol('${s}',false)">
+      <span class="sym">${s}</span><span class="rchip r-sideways" data-r>—</span><span class="px" data-px>—</span>
+    </button>
+    <button class="rm" title="remove from watchlist" onclick="removeFromWatchlist('${s}')">✕</button>
+  </div>`;
+}
+function currentWatch(){ return [...document.querySelectorAll('.wl .item')].map(i=>i.dataset.sym); }
+function markActive(s){ document.querySelectorAll('.wl .item').forEach(it=>it.classList.toggle('active', it.dataset.sym===s)); }
 function buildWatchlist(syms){
-  const wl = $('watchlist'); wl.innerHTML='';
-  syms.forEach(s=>{
-    const b = document.createElement('button'); b.dataset.sym = s; b.onclick = ()=>selectSymbol(s);
-    b.innerHTML = `<span class="sym">${s}</span><span class="rchip r-sideways" data-r>—</span><span class="px" data-px>—</span>`;
-    if(s===SYMBOL) b.classList.add('active');
-    wl.appendChild(b);
-  });
-  refreshWatchlist(syms);
+  $('watchlist').innerHTML = syms.map(wlItemHTML).join('');
+  markActive(SYMBOL); refreshWatchlist(syms);
 }
 async function refreshWatchlist(syms){
   for(const s of syms){
     try{
       const q = await api('/api/quote?symbol='+encodeURIComponent(s));   // cheap: price+regime only
-      const b = document.querySelector(`.wl button[data-sym="${s}"]`); if(!b) continue;
-      const chip = b.querySelector('[data-r]'); chip.textContent = q.regime;
-      chip.className = 'rchip r-'+q.regime;
-      b.querySelector('[data-px]').textContent = fmt(q.lastPrice);
+      const it = document.querySelector(`.wl .item[data-sym="${s}"]`); if(!it) continue;
+      const chip = it.querySelector('[data-r]'); chip.textContent = q.regime; chip.className = 'rchip r-'+q.regime;
+      it.querySelector('[data-px]').textContent = fmt(q.lastPrice);
     }catch(e){ /* ignore per-symbol */ }
   }
 }
 async function refreshQuote(s){ return refreshWatchlist([s]); }
 function ensureWatchlist(s){
-  if(document.querySelector(`.wl button[data-sym="${s}"]`)) return;
-  const wl=$('watchlist'); const b=document.createElement('button'); b.dataset.sym=s;
-  b.onclick=()=>selectSymbol(s);
-  b.innerHTML=`<span class="sym">${s}</span><span class="rchip r-sideways" data-r>—</span><span class="px" data-px>—</span>`;
-  wl.prepend(b); refreshQuote(s);
+  if(document.querySelector(`.wl .item[data-sym="${s}"]`)) return;
+  $('watchlist').insertAdjacentHTML('afterbegin', wlItemHTML(s)); refreshQuote(s);
 }
-function selectSymbol(s){
+function removeFromWatchlist(s){
+  const it=document.querySelector(`.wl .item[data-sym="${s}"]`); if(it) it.remove();
+  log('removed '+s+' from watchlist','dim');
+}
+function selectSymbol(s, addToWatch){
   s=(s||'').toUpperCase(); if(!s) return;
-  SYMBOL = s; ensureWatchlist(s);
-  document.querySelectorAll('.wl button').forEach(b=>b.classList.toggle('active', b.dataset.sym===s));
-  $('o-symbol').value = s;
+  SYMBOL = s; if(addToWatch!==false) ensureWatchlist(s);
+  markActive(s); $('o-symbol').value = s;
   loadState(false); loadNews(); loadPortfolio();
+}
+/* validate against Alpaca (when connected) before adding a searched symbol */
+async function pickSymbol(raw){
+  const s=(raw||'').trim().toUpperCase(); if(!s) return;
+  hideSuggest(); $('search').value='';
+  try{
+    const v=await api('/api/validate?symbol='+encodeURIComponent(s));
+    if(!v.valid){ log('cannot add '+s+' — '+(v.reason||'not a valid Alpaca symbol'),'err'); return; }
+    if(v.source==='unverified') log('added '+s+' (unverified — connect an Alpaca account to validate symbols)','warn');
+    else if(v.tradable===false) log(s+' exists on Alpaca but is not currently tradable','warn');
+  }catch(e){ /* validation endpoint failed — allow */ }
+  selectSymbol(s, true);
+}
+/* ---- search suggestions dropdown ---- */
+let SUGG=[], SUGGI=-1, SUGG_CONN=false;
+async function onSearchInput(){
+  const q=$('search').value.trim(); if(!q){ hideSuggest(); return; }
+  try{ const d=await api('/api/search?q='+encodeURIComponent(q)); SUGG=d.results||[]; SUGG_CONN=!!d.connected; SUGGI=-1; renderSuggest(); }
+  catch(e){ hideSuggest(); }
+}
+function renderSuggest(){
+  const el=$('sugg-list');
+  if(!SUGG.length){ el.innerHTML='<div class="empty">no matches</div>'; el.classList.add('open'); return; }
+  el.innerHTML = SUGG.map((s,i)=>
+    `<div class="s ${i===SUGGI?'hl':''}" onmousedown="event.preventDefault()" onclick="pickSymbol('${s}')">
+       <span class="t">${s}</span><span class="m">${SUGG_CONN?'alpaca':''}</span></div>`).join('');
+  el.classList.add('open');
+}
+function hideSuggest(){ $('sugg-list').classList.remove('open'); SUGGI=-1; }
+function moveSuggest(d){
+  if(!SUGG.length) return; SUGGI=(SUGGI+d+SUGG.length)%SUGG.length; renderSuggest();
+  const hl=$('sugg-list').querySelector('.s.hl'); if(hl) hl.scrollIntoView({block:'nearest'});
 }
 
 /* ---------- timeframe (client-side slice — instant, no refetch) ---------- */
@@ -480,7 +545,30 @@ async function loadState(force){
   $('m-dd').textContent = st.metrics.maxDrawdown==null?'—':fmt(st.metrics.maxDrawdown*100,1)+'%';
   buildTicker(st);
   renderExtras(st);
+  renderAfford();
   if(card) card.classList.remove('loading');
+}
+
+/* ---------- price + affordability ---------- */
+function renderAfford(){
+  const el=$('afford'); if(!el) return;
+  const px = LAST ? LAST.lastPrice : null; const sym = LAST ? LAST.ticker : SYMBOL;
+  if(px==null){ el.innerHTML='<span class="muted">price —</span>'; return; }
+  let h = `<span>${sym} <b>$${fmt(px)}</b></span>`;
+  if(BP!=null){
+    const max=Math.floor(BP/px);
+    h += `<span>buying power <b>$${fmt(BP)}</b></span><span>max ≈ <b>${max}</b> sh</span>`;
+  } else {
+    h += `<span class="muted">connect an account to see buying power</span>`;
+  }
+  el.innerHTML=h;
+}
+function fillMax(){
+  if(LAST==null){ log('no price yet','warn'); return; }
+  if(BP==null){ log('connect an Alpaca account to size by buying power','warn'); return; }
+  const max=Math.floor(BP/LAST.lastPrice);
+  $('o-qty').value = max>0?max:''; $('o-notional').value='';
+  log(`max affordable ≈ ${max} sh of ${LAST.ticker} at $${fmt(LAST.lastPrice)}`,'dim');
 }
 
 /* ---------- extra widgets: stationary, timeline, walk-forward, forecast ---------- */
@@ -548,9 +636,11 @@ async function loadNews(){
   let d; try{ d=await api('/api/news?symbol='+encodeURIComponent(SYMBOL)); }
   catch(e){ el.innerHTML='<div class="muted">news unavailable</div>'; $('news-tag').textContent='—'; return; }
   const items=d.items||[];
-  $('news-tag').textContent = items.length ? (items[0].sample?'sample feed':'live · Alpaca') : '—';
+  const sample = items.length && items[0].sample;
+  $('news-tag').textContent = items.length ? (sample?'sample feed':'live') : '—';
   if(!items.length){ el.innerHTML='<div class="muted">no headlines</div>'; return; }
-  el.innerHTML = items.map(n=>{
+  const hint = sample ? '<div class="muted" style="font-size:10px;margin-bottom:2px">sample headlines — needs internet (Yahoo) or a connected Alpaca account for live news</div>' : '';
+  el.innerHTML = hint + items.map(n=>{
     const t = n.createdAt ? new Date(n.createdAt).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
     const arrow = n.sentiment==='bullish'?'▲':n.sentiment==='bearish'?'▼':'■';
     const hl = n.url ? `<a class="hl" href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.headline)}</a>`
@@ -697,6 +787,7 @@ async function cancelAll(){
 async function loadPortfolio(){
   let pf; try{ pf=await api('/api/portfolio?symbol='+encodeURIComponent(SYMBOL)); }catch(e){ return; }
   const el=$('portfolio');
+  BP = (pf.connected && pf.account) ? pf.account.buyingPower : null; renderAfford();
   if(!pf.connected){ el.innerHTML='<div class="muted">no account connected — add one under Accounts</div>'; $('pf-tag').textContent='offline'; return; }
   $('pf-tag').textContent='connected';
   let h=`<div class="stat-row"><div class="stat"><div class="v">${fmt(pf.account.equity)}</div><div class="k">equity</div></div>`;
@@ -752,20 +843,18 @@ function wireControls(){
   document.querySelectorAll('#tfbar button').forEach(b=>{
     b.onclick = ()=>setTF(parseInt(b.dataset.tf,10), b);
   });
-  // search: Enter selects any ticker; typing fetches suggestions
+  // search: typing a letter lists matching tickers; click / Enter adds (validated)
   const search=$('search');
-  search.addEventListener('keydown', e=>{
-    if(e.key==='Enter'){ const v=search.value.trim().toUpperCase(); if(v){ selectSymbol(v); search.value=''; $('sugg').innerHTML=''; } }
-  });
   let sTimer;
-  search.addEventListener('input', ()=>{
-    clearTimeout(sTimer);
-    sTimer=setTimeout(async ()=>{
-      const q=search.value.trim(); if(!q) return;
-      try{ const d=await api('/api/search?q='+encodeURIComponent(q));
-        $('sugg').innerHTML=(d.results||[]).map(s=>`<option value="${esc(s)}">`).join(''); }catch(e){}
-    }, 150);
+  search.addEventListener('input', ()=>{ clearTimeout(sTimer); sTimer=setTimeout(onSearchInput, 120); });
+  search.addEventListener('keydown', e=>{
+    if(e.key==='ArrowDown'){ e.preventDefault(); moveSuggest(1); }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); moveSuggest(-1); }
+    else if(e.key==='Enter'){ e.preventDefault(); pickSymbol(SUGGI>=0 && SUGG[SUGGI] ? SUGG[SUGGI] : search.value); }
+    else if(e.key==='Escape'){ hideSuggest(); }
   });
+  search.addEventListener('focus', ()=>{ if(search.value.trim()) onSearchInput(); });
+  search.addEventListener('blur', ()=>{ setTimeout(hideSuggest, 150); });
 }
 
 /* ---------- boot ---------- */
@@ -780,7 +869,7 @@ async function boot(){
   log('terminal online — Markov regime engine ready','ok');
   setInterval(()=>{ loadState(true); loadPortfolio(); }, 15000);
   setInterval(()=>{ loadNews(); }, 120000);
-  setInterval(()=>refreshWatchlist(CFG.symbols||[]), 30000);
+  setInterval(()=>refreshWatchlist(currentWatch()), 30000);
 }
 boot();
 </script>
