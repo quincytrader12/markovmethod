@@ -118,3 +118,71 @@ def get_ohlc(settings) -> pd.DataFrame:
     if settings.has_credentials:
         return from_alpaca_ohlc(settings.ticker, settings.years, settings.api_key, settings.api_secret)
     return from_yfinance_ohlc(settings.ticker, settings.years)
+
+
+# ── intraday (for the 1D / 1W timeframes) ────────────────────────────────────
+def synthetic_intraday(tf: str = "1D", seed: int = 0) -> pd.DataFrame:
+    """Deterministic intraday OHLC so the 1D / 1W views render fully offline."""
+    tf = tf.upper()
+    n, freq = (78, "5min") if tf == "1D" else (130, "30min")
+    rng = np.random.default_rng(seed + 7)
+    idx = pd.date_range(end=pd.Timestamp.now().floor("min"), periods=n, freq=freq)
+    rets = rng.normal(0.0001, 0.0035, n)
+    price = 100.0 * np.exp(np.cumsum(rets))
+    o = np.empty(n); o[0] = price[0]; o[1:] = price[:-1]
+    c = price
+    amp = np.abs(rng.normal(0.0, 0.0028, n)) + 0.0008
+    hi = np.maximum(o, c) * (1.0 + amp)
+    lo = np.minimum(o, c) * (1.0 - amp)
+    return pd.DataFrame({"Open": o, "High": hi, "Low": lo, "Close": c}, index=idx)
+
+
+def _yfinance_intraday(ticker: str, tf: str) -> pd.DataFrame:
+    import yfinance as yf
+
+    period, interval = ("1d", "5m") if tf.upper() == "1D" else ("5d", "30m")
+    df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False)
+    return _ohlc_columns(df)
+
+
+def _alpaca_intraday(ticker: str, tf: str, api_key: str, api_secret: str) -> pd.DataFrame:
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+    tf = tf.upper()
+    if tf == "1D":
+        frame, back = TimeFrame(5, TimeFrameUnit.Minute), pd.Timedelta(days=4)
+    else:
+        frame, back = TimeFrame(30, TimeFrameUnit.Minute), pd.Timedelta(days=8)
+    start = (pd.Timestamp.now(tz="UTC") - back).to_pydatetime()
+
+    if "/" in ticker or (ticker.endswith("USD") and "-" in ticker):
+        from alpaca.data.historical import CryptoHistoricalDataClient
+        from alpaca.data.requests import CryptoBarsRequest
+
+        symbol = ticker.replace("-", "/")
+        client = CryptoHistoricalDataClient(api_key, api_secret)
+        bars = client.get_crypto_bars(
+            CryptoBarsRequest(symbol_or_symbols=symbol, timeframe=frame, start=start)).df
+        key = symbol
+    else:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+
+        client = StockHistoricalDataClient(api_key, api_secret)
+        bars = client.get_stock_bars(
+            StockBarsRequest(symbol_or_symbols=ticker, timeframe=frame, start=start)).df
+        key = ticker
+
+    if isinstance(bars.index, pd.MultiIndex):
+        bars = bars.xs(key, level=0)
+    df = _ohlc_columns(bars)
+    if tf == "1D" and not df.empty:                 # 1D = the latest session only
+        df = df[df.index >= df.index[-1].normalize()]
+    return df
+
+
+def get_intraday_ohlc(settings, tf: str) -> pd.DataFrame:
+    """Intraday OHLC (5-min for 1D, 30-min for 1W) — Alpaca if keys, else yfinance."""
+    if settings.has_credentials:
+        return _alpaca_intraday(settings.ticker, tf, settings.api_key, settings.api_secret)
+    return _yfinance_intraday(settings.ticker, tf)

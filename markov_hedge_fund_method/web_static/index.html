@@ -314,6 +314,8 @@
           <span class="price" id="c-price">—</span>
           <span class="sig" id="c-sig"></span>
           <span class="tfbar" id="tfbar">
+            <button data-tf="1D" title="intraday · 5-min candles">1D</button>
+            <button data-tf="1W" title="1 week · 30-min candles">1W</button>
             <button data-tf="21">1M</button><button data-tf="63">3M</button>
             <button data-tf="126" class="on">6M</button><button data-tf="252">1Y</button>
             <button data-tf="504">2Y</button>
@@ -416,7 +418,8 @@ const C = { bull:'#2fe08a', bear:'#ff4d5e', sideways:'#7f9bb3', cyan:'#38f0e0', 
 let SYMBOL = 'SPY';
 let SIDE = 'buy';
 let CFG = {};
-let TF = 126;                 // timeframe in trading days (6M default)
+let TF = 126;                 // number = daily-range days; "1D"/"1W" = intraday
+let INTRADAY = null;          // intraday candles payload when TF is "1D"/"1W"
 let LAST = null;              // full payload for the current symbol
 let BP = null;                // buying power ($) when an account is connected
 const STATE_CACHE = {};       // symbol -> payload (instant re-select)
@@ -547,14 +550,35 @@ function sliceChart(ch, n){
   return { bars:s(ch.bars), ma20:s(ch.ma20), ma50:s(ch.ma50), rsi:s(ch.rsi), momentum:s(ch.momentum) };
 }
 function renderChart(){
+  if(typeof TF === 'string'){                       // intraday (1D / 1W)
+    if(!INTRADAY) return;
+    const reg = LAST ? LAST.regime : 'sideways';
+    const ch = { bars: INTRADAY.bars.map(b=>({...b, regime:reg})),
+                 ma20:INTRADAY.ma20, ma50:INTRADAY.ma50, rsi:INTRADAY.rsi, momentum:INTRADAY.momentum };
+    drawChart(ch); drawMini('mom', ch.momentum, 0); drawMini('rsi', ch.rsi, 50);
+    return;
+  }
   if(!LAST) return;
   const ch = sliceChart(LAST.chart, TF);
   drawChart(ch); drawMini('mom', ch.momentum, 0); drawMini('rsi', ch.rsi, 50);
 }
-function setTF(n, btn){
-  TF = n;
+function refreshChart(){
+  if(typeof TF === 'string') loadIntraday();
+  else { INTRADAY = null; renderChart(); }
+}
+async function loadIntraday(){
+  const tf = TF, sym = SYMBOL;
+  const card = document.querySelector('.chartcard'); if(card) card.classList.add('loading');
+  try{
+    const d = await api('/api/candles?symbol='+encodeURIComponent(sym)+'&tf='+tf);
+    if(TF === tf && SYMBOL === sym){ INTRADAY = d; renderChart(); }
+  }catch(e){ log('intraday load failed: '+e.message,'err'); }
+  if(card) card.classList.remove('loading');
+}
+function setTF(v, btn){
+  TF = v;
   document.querySelectorAll('#tfbar button').forEach(b=>b.classList.toggle('on', b===btn));
-  renderChart();
+  refreshChart();
 }
 
 /* ---------- main state ---------- */
@@ -572,7 +596,7 @@ async function loadState(force){
   $('v-source').textContent = (st.dataSource||'').toUpperCase();
   const sc = st.signal>0?C.bull:st.signal<0?C.bear:C.sideways;
   $('c-sig').innerHTML = `regime <b style="color:${C[st.regime]}">${st.currentStateName}</b> · signal <b style="color:${sc}">${st.signal>0?'+':''}${fmt(st.signal,3)}</b> · target ${esc(st.targetLabel)}`;
-  renderChart();
+  refreshChart();
   drawGauge(st.greedFear);
   drawMatrix(st);
   $('m-signal').textContent = (st.signal>0?'+':'')+fmt(st.signal,3);
@@ -713,7 +737,7 @@ function drawChart(chart){
     ctx.fillText(val.toFixed(1), 4, y+3); }
   // regime ribbon (bottom band)
   const ry=h-pad.b+6, rh=8;
-  for(let i=0;i<bars.length;i++){ ctx.fillStyle=C[bars[i].regime]; ctx.globalAlpha=.85;
+  for(let i=0;i<bars.length;i++){ ctx.fillStyle=C[bars[i].regime]||C.sideways; ctx.globalAlpha=.85;
     ctx.fillRect(X(i), ry, Math.max(1,(w-pad.l-pad.r)/bars.length+1), rh); }
   ctx.globalAlpha=1;
   // candlesticks — neon green up / neon red down
@@ -883,7 +907,7 @@ async function removeAccount(name){
 function wireControls(){
   // timeframe buttons
   document.querySelectorAll('#tfbar button').forEach(b=>{
-    b.onclick = ()=>setTF(parseInt(b.dataset.tf,10), b);
+    b.onclick = ()=>{ const raw=b.dataset.tf; setTF(/^\d+$/.test(raw)?parseInt(raw,10):raw, b); };
   });
   // search: typing a letter lists matching tickers; click / Enter adds (validated)
   const search=$('search');

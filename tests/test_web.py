@@ -90,6 +90,18 @@ def test_state_has_candles_and_name():
     assert isinstance(bar["up"], bool)
 
 
+def test_intraday_candles_1d_and_1w():
+    client, _ = _demo_client()
+    for tf, floor in (("1D", 40), ("1W", 80)):
+        d = client.get("/api/candles", params={"symbol": "AAPL", "tf": tf}).json()
+        assert d["tf"] == tf and len(d["bars"]) >= floor
+        bar = d["bars"][-1]
+        assert {"o", "h", "l", "c", "up", "t"} <= set(bar)
+        assert bar["l"] <= bar["o"] <= bar["h"] and bar["l"] <= bar["c"] <= bar["h"]
+        assert ":" in bar["t"]                       # intraday timestamps carry a time
+        assert len(d["ma20"]) == len(d["bars"])
+
+
 def test_quote_includes_name():
     client, _ = _demo_client()
     q = client.get("/api/quote", params={"symbol": "MSFT"}).json()

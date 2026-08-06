@@ -29,11 +29,18 @@ from dataclasses import replace
 from .accounts import AccountStore
 from .broker import ReadOnlyError, make_broker
 from .config import Mode, Settings, load_settings
-from .market_data import get_history, get_ohlc, synthetic_close, synthetic_ohlc
+from .market_data import (
+    get_history,
+    get_intraday_ohlc,
+    get_ohlc,
+    synthetic_close,
+    synthetic_intraday,
+    synthetic_ohlc,
+)
 from .markov2 import Strategy
 from .news import fetch_news
 from .orders import OrderTicket, OrderValidationError
-from .webstate import market_state, quote_state
+from .webstate import _rsi, market_state, quote_state
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "web_static")
 DEFAULT_SYMBOLS = ["SPY", "QQQ", "AAPL", "NVDA", "TSLA", "MSFT", "BTC-USD"]
@@ -176,6 +183,15 @@ class AppState:
         except Exception:  # noqa: BLE001 — never leave the HUD blank
             return synthetic_ohlc(seed=_seed(symbol)), "synthetic (data unavailable)"
 
+    def intraday_for(self, symbol: str, tf: str):
+        """Intraday OHLC (1D/1W) for a symbol, always renderable."""
+        if self.demo:
+            return synthetic_intraday(tf, seed=_seed(symbol)), "synthetic (demo)"
+        try:
+            return get_intraday_ohlc(replace(self.settings, ticker=symbol), tf), "live"
+        except Exception:  # noqa: BLE001 — fall back so the chart never blanks
+            return synthetic_intraday(tf, seed=_seed(symbol)), "synthetic (data unavailable)"
+
     def state_payload(self, symbol: str) -> dict:
         """Full HUD payload for a symbol, memoised with a short TTL."""
         cached = self._state_cache.get(symbol)
@@ -274,6 +290,36 @@ def create_app(state: AppState):
     def state_endpoint(symbol: str = "SPY"):
         symbol = symbol.strip().upper() or "SPY"
         return state.state_payload(symbol)
+
+    @app.get("/api/candles")
+    def candles(symbol: str = "SPY", tf: str = "1D"):
+        import pandas as pd
+        symbol = symbol.strip().upper() or "SPY"
+        tf = (tf or "1D").upper()
+        df, source = state.intraday_for(symbol, tf)
+        if df is None or df.empty:
+            return {"symbol": symbol, "tf": tf, "bars": [], "ma20": [], "ma50": [],
+                    "rsi": [], "momentum": [], "source": source}
+        df = df.iloc[-400:]
+        close = df["Close"]
+        ma20 = close.rolling(20).mean()
+        ma50 = close.rolling(50).mean()
+        rsi = _rsi(close)
+        mom = (close / close.shift(14) - 1.0) * 100.0
+
+        def r4(v):
+            return round(float(v), 4)
+
+        def ser(s):
+            return [None if pd.isna(v) else round(float(v), 4) for v in s]
+
+        bars = [
+            {"t": ts.strftime("%Y-%m-%d %H:%M"), "o": r4(o), "h": r4(h), "l": r4(lo),
+             "c": r4(c), "up": bool(c >= o)}
+            for ts, o, h, lo, c in zip(df.index, df["Open"], df["High"], df["Low"], df["Close"])
+        ]
+        return {"symbol": symbol, "tf": tf, "bars": bars, "ma20": ser(ma20), "ma50": ser(ma50),
+                "rsi": ser(rsi), "momentum": ser(mom), "source": source}
 
     @app.get("/api/quote")
     def quote(symbol: str = "SPY"):
