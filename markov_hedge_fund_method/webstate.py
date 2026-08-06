@@ -14,9 +14,59 @@ import pandas as pd
 
 from .engine import analyze2
 from .markov2 import Strategy
-from .regime import STATES, label_regimes, walk_forward_backtest
+from .regime import STATES, label_regimes, n_step_forecast, walk_forward_backtest
 
 _REGIME_KEY = {0: "bear", 1: "sideways", 2: "bull"}
+
+
+def _forecast(P, current: int, horizons=(1, 5, 20)) -> list[dict]:
+    """Chapman-Kolmogorov: regime probabilities n steps ahead from `current`."""
+    out = []
+    for h in horizons:
+        row = n_step_forecast(P, h)[current]
+        out.append({
+            "h": h,
+            "bear": round(float(row[0]), 4),
+            "sideways": round(float(row[1]), 4),
+            "bull": round(float(row[2]), 4),
+        })
+    return out
+
+
+def _timeline(labels: pd.Series) -> dict:
+    """Days in the current regime + the most recent regime flips."""
+    arr = labels.to_numpy()
+    idx = labels.index
+    if not len(arr):
+        return {"daysInRegime": 0, "recentFlips": []}
+    cur = int(arr[-1])
+    days = 0
+    for v in arr[::-1]:
+        if int(v) == cur:
+            days += 1
+        else:
+            break
+    flips, prev = [], int(arr[0])
+    for i in range(1, len(arr)):
+        v = int(arr[i])
+        if v != prev:
+            flips.append({"date": idx[i].strftime("%Y-%m-%d"),
+                          "from": _REGIME_KEY[prev], "to": _REGIME_KEY[v]})
+            prev = v
+    return {"daysInRegime": days, "recentFlips": flips[-6:][::-1]}
+
+
+def _downsample(values: list, index: list, target: int = 140):
+    if not values:
+        return [], []
+    step = max(1, len(values) // target)
+    v = values[::step]
+    ix = index[::step] if index else []
+    if v[-1] != values[-1]:
+        v.append(values[-1])
+        if ix:
+            ix.append(index[-1])
+    return [round(float(x), 5) for x in v], ix
 
 
 def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
@@ -128,7 +178,9 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
     ]
 
     metrics = walk_forward_backtest(close, labels) if include_metrics else {
-        "sharpe": float("nan"), "max_drawdown": float("nan"), "n_trades": 0}
+        "sharpe": float("nan"), "max_drawdown": float("nan"), "n_trades": 0,
+        "win_rate": float("nan"), "equity": [], "equity_index": []}
+    eq, eq_idx = _downsample(metrics.get("equity", []), metrics.get("equity_index", []))
 
     return {
         "ticker": ticker,
@@ -147,6 +199,8 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
         "diagonalInflation": [round(float(v), 2) for v in snap.comparison.inflation],
         "verified": bool(snap.verification.passed),
         "greedFear": greed_fear(close),
+        "forecast": _forecast(snap.honest_matrix, snap.current_state),
+        "regimeTimeline": _timeline(labels),
         "chart": {
             "bars": bars,
             "ma20": series(ma20),
@@ -158,5 +212,8 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
             "sharpe": None if pd.isna(metrics["sharpe"]) else round(metrics["sharpe"], 3),
             "maxDrawdown": None if pd.isna(metrics["max_drawdown"]) else round(metrics["max_drawdown"], 4),
             "nTrades": metrics["n_trades"],
+            "winRate": None if pd.isna(metrics.get("win_rate", float("nan"))) else round(metrics["win_rate"], 4),
+            "equity": eq,
+            "equityIndex": eq_idx,
         },
     }

@@ -177,3 +177,38 @@ def test_news_sentiment_classifier():
     assert classify("Company beats earnings and shares surge to record") == "bullish"
     assert classify("Stock plunges after downgrade and lawsuit probe") == "bearish"
     assert classify("Company holds annual meeting today") == "neutral"
+
+
+def test_state_has_forecast_and_timeline_and_equity():
+    client, _ = _demo_client()
+    st = client.get("/api/state", params={"symbol": "SPY"}).json()
+
+    # n-step regime forecast — probabilities that sum to ~1 per horizon
+    fc = st["forecast"]
+    assert [row["h"] for row in fc] == [1, 5, 20]
+    for row in fc:
+        assert abs(row["bear"] + row["sideways"] + row["bull"] - 1.0) < 1e-3  # 4-dp rounding
+
+    # regime timeline
+    tl = st["regimeTimeline"]
+    assert tl["daysInRegime"] >= 1
+    assert isinstance(tl["recentFlips"], list)
+    if tl["recentFlips"]:
+        f = tl["recentFlips"][0]
+        assert set(f) == {"date", "from", "to"}
+
+    # walk-forward equity + win rate
+    m = st["metrics"]
+    assert isinstance(m["equity"], list) and len(m["equity"]) >= 2
+    assert 0.0 <= m["winRate"] <= 1.0
+
+
+def test_forecast_converges_to_stationary():
+    # far-horizon forecast should approach the stationary distribution
+    from markov_hedge_fund_method.market_data import synthetic_close
+    from markov_hedge_fund_method.webstate import market_state
+    st = market_state(synthetic_close(seed=5), "SPY")
+    far = st["forecast"][-1]  # 20 steps
+    stat = st["stationary"]   # [bear, sideways, bull]
+    assert abs(far["bear"] - stat[0]) < 0.05
+    assert abs(far["bull"] - stat[2]) < 0.05

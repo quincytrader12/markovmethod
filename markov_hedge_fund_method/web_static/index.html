@@ -63,6 +63,8 @@
   .panel h2{margin:0 0 10px; font-size:11px; letter-spacing:2px; color:var(--cyan);
     text-transform:uppercase; display:flex; align-items:center; gap:8px}
   .panel h2 .tag{margin-left:auto; color:var(--dim); font-size:10px; letter-spacing:1px}
+  /* a panel that expands to consume its column's leftover height */
+  .panel.grow{flex:1 1 auto; display:flex; flex-direction:column}
 
   /* search */
   .search{width:100%; margin-bottom:8px; background:#060f18; border:1px solid var(--edge);
@@ -105,7 +107,7 @@
     border-radius:3px; padding:3px 9px; font-family:inherit; font-size:11px; letter-spacing:1px}
   .tfbar button:hover{border-color:var(--cyan); color:var(--ink)}
   .tfbar button.on{color:var(--bg); background:var(--cyan); border-color:var(--cyan); font-weight:700}
-  canvas.px{width:100%; height:340px; display:block; transition:opacity .12s}
+  canvas.px{width:100%; flex:1 1 auto; min-height:280px; height:auto; display:block; transition:opacity .12s}
   .loading canvas.px{opacity:.35}
   /* news */
   .news{display:flex; flex-direction:column; gap:6px; max-height:260px; overflow:auto}
@@ -164,6 +166,7 @@
   /* log + accounts */
   .log{height:96px; overflow:auto; background:#060d15; border:1px solid var(--edge); border-radius:3px;
     padding:6px; font-size:11px; line-height:1.5}
+  .panel.grow .log{flex:1 1 auto; height:auto; min-height:96px}
   .log .ok{color:var(--green)} .log .err{color:var(--red)} .log .warn{color:var(--amber)} .log .dim{color:var(--dim)}
   .acct{display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid var(--edge);
     border-radius:3px; background:#08121c; margin-bottom:4px; font-size:12px}
@@ -178,6 +181,29 @@
   .mini-btn:hover{border-color:var(--cyan)}
   .mini-btn.danger{color:var(--red)}
 
+  /* long-run + timeline */
+  .lr{display:flex; align-items:center; gap:10px}
+  #statdonut{width:100px; height:100px; flex:0 0 auto}
+  .statlegend{flex:1; display:flex; flex-direction:column; gap:5px; font-size:11px}
+  .statlegend .row2{display:flex; align-items:center; gap:7px}
+  .statlegend .dot{width:9px; height:9px; border-radius:2px; box-shadow:var(--glow) currentColor}
+  .statlegend .pct{margin-left:auto; color:var(--ink); font-variant-numeric:tabular-nums}
+  .timeline{margin-top:10px; display:flex; flex-direction:column; gap:3px; font-size:11px;
+    flex:1 1 auto; overflow:auto}
+  .timeline .now{color:var(--cyan2)}
+  .timeline .flip{color:var(--dim); display:flex; gap:6px}
+  .timeline .flip .d{color:var(--dim2)}
+  /* center bottom split */
+  .cbottom{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+  @media (max-width:900px){ .cbottom{grid-template-columns:1fr} }
+  canvas.equity{width:100%; height:120px; display:block}
+  /* forecast */
+  .forecast{display:flex; flex-direction:column; gap:10px}
+  .fc-row{display:grid; grid-template-columns:42px 1fr; gap:8px; align-items:center}
+  .fc-h{font-size:11px; color:var(--dim); letter-spacing:1px}
+  .fc-bar{display:flex; height:20px; border:1px solid var(--edge); border-radius:3px; overflow:hidden; font-size:9px}
+  .fc-seg{display:flex; align-items:center; justify-content:center; color:#04070d; font-weight:700; min-width:0; overflow:hidden}
+  .fc-seg.bear{background:var(--red)} .fc-seg.sideways{background:var(--sideways)} .fc-seg.bull{background:var(--green)}
   /* ticker */
   .ticker{border-top:1px solid var(--edge); background:#070d15; overflow:hidden; white-space:nowrap; padding:6px 0}
   .ticker .track{display:inline-block; padding-left:100%; animation:scroll 40s linear infinite}
@@ -225,6 +251,14 @@
         <h2>Portfolio <span class="tag" id="pf-tag">—</span></h2>
         <div id="portfolio"><div class="muted">no account connected</div></div>
       </div>
+      <div class="panel grow">
+        <h2>Long-run &amp; Timeline <span class="tag">stationary · flips</span></h2>
+        <div class="lr">
+          <canvas id="statdonut" width="200" height="200"></canvas>
+          <div id="statlegend" class="statlegend"></div>
+        </div>
+        <div id="timeline" class="timeline"></div>
+      </div>
     </div>
 
     <!-- CENTER -->
@@ -251,6 +285,21 @@
         <h2>News · Sentiment <span class="tag" id="news-tag">—</span></h2>
         <div id="news" class="news"><div class="muted">loading headlines…</div></div>
       </div>
+      <div class="cbottom">
+        <div class="panel">
+          <h2>Walk-forward <span class="tag">no-lookahead backtest</span></h2>
+          <canvas id="equity" class="equity" width="760" height="150"></canvas>
+          <div class="stat-row">
+            <div class="stat"><div class="v" id="wf-sharpe">—</div><div class="k">sharpe</div></div>
+            <div class="stat"><div class="v" id="wf-win">—</div><div class="k">win rate</div></div>
+            <div class="stat"><div class="v" id="wf-dd">—</div><div class="k">max DD</div></div>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>Regime Forecast <span class="tag">P(regime) n-steps</span></h2>
+          <div id="forecast" class="forecast"></div>
+        </div>
+      </div>
     </div>
 
     <!-- RIGHT -->
@@ -265,7 +314,7 @@
         </div>
       </div>
 
-      <div class="panel">
+      <div class="panel grow">
         <h2>Execution <span class="tag">every Alpaca order type</span></h2>
         <div class="seg" style="margin-bottom:6px">
           <button id="side-buy" class="on" onclick="setSide('buy')">Buy</button>
@@ -430,7 +479,67 @@ async function loadState(force){
   $('m-sharpe').textContent = st.metrics.sharpe==null?'—':fmt(st.metrics.sharpe,2);
   $('m-dd').textContent = st.metrics.maxDrawdown==null?'—':fmt(st.metrics.maxDrawdown*100,1)+'%';
   buildTicker(st);
+  renderExtras(st);
   if(card) card.classList.remove('loading');
+}
+
+/* ---------- extra widgets: stationary, timeline, walk-forward, forecast ---------- */
+function renderExtras(st){
+  drawDonut(st.stationary); renderStatLegend(st.stationary); renderTimeline(st.regimeTimeline);
+  drawEquity(st.metrics.equity);
+  $('wf-sharpe').textContent = st.metrics.sharpe==null?'—':fmt(st.metrics.sharpe,2);
+  $('wf-sharpe').style.color = (st.metrics.sharpe||0)>=0?C.bull:C.bear;
+  $('wf-win').textContent = st.metrics.winRate==null?'—':fmt(st.metrics.winRate*100,1)+'%';
+  $('wf-dd').textContent = st.metrics.maxDrawdown==null?'—':fmt(st.metrics.maxDrawdown*100,1)+'%';
+  renderForecast(st.forecast);
+}
+function drawDonut(stationary){
+  const {ctx,w,h}=chartCtx('statdonut'); ctx.clearRect(0,0,w,h);
+  const cx=w/2, cy=h/2, r=Math.min(w,h)/2-4, ir=r*0.58;
+  const cols=[C.bear, C.sideways, C.bull];
+  let a=-Math.PI/2;
+  stationary.forEach((v,i)=>{ const a2=a+v*Math.PI*2;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,r,a,a2); ctx.closePath();
+    ctx.fillStyle=cols[i]; ctx.globalAlpha=.85; ctx.fill(); ctx.globalAlpha=1; a=a2; });
+  ctx.beginPath(); ctx.arc(cx,cy,ir,0,7); ctx.fillStyle='#0a1119'; ctx.fill();
+  const mi=stationary.indexOf(Math.max(...stationary));
+  ctx.textAlign='center'; ctx.fillStyle=cols[mi]; ctx.font='bold 13px monospace';
+  ctx.fillText(Math.round(stationary[mi]*100)+'%', cx, cy-1);
+  ctx.fillStyle=C.dim; ctx.font='8px monospace'; ctx.fillText(['BEAR','SIDE','BULL'][mi], cx, cy+11);
+}
+function renderStatLegend(stationary){
+  const names=['Bear','Sideways','Bull'], cols=[C.bear,C.sideways,C.bull];
+  $('statlegend').innerHTML = names.map((n,i)=>
+    `<div class="row2"><span class="dot" style="color:${cols[i]};background:${cols[i]}"></span>${n}<span class="pct">${(stationary[i]*100).toFixed(1)}%</span></div>`).join('');
+}
+function renderTimeline(tl){
+  const el=$('timeline'); if(!tl){ el.innerHTML=''; return; }
+  let h=`<div class="now">● ${tl.daysInRegime} day(s) in current regime</div>`;
+  (tl.recentFlips||[]).forEach(f=>{
+    h+=`<div class="flip"><span class="d">${f.date}</span> ${f.from} → <b style="color:${C[f.to]}">${f.to}</b></div>`; });
+  el.innerHTML=h;
+}
+function drawEquity(eq){
+  const {ctx,w,h}=chartCtx('equity'); ctx.clearRect(0,0,w,h);
+  if(!eq||eq.length<2){ ctx.fillStyle=C.dim; ctx.font='11px monospace'; ctx.fillText('insufficient history for backtest', 8, h/2); return; }
+  const pad={l:4,r:42,t:6,b:6};
+  let lo=Math.min(...eq), hi=Math.max(...eq); const s=(hi-lo)||1; lo-=s*.05; hi+=s*.05;
+  const X=i=>pad.l+(w-pad.l-pad.r)*(i/(eq.length-1)); const Y=v=>pad.t+(h-pad.t-pad.b)*(1-(v-lo)/(hi-lo));
+  ctx.strokeStyle=C.grid; ctx.beginPath(); const y1=Y(1); ctx.moveTo(pad.l,y1); ctx.lineTo(w-pad.r,y1); ctx.stroke();
+  const grad=ctx.createLinearGradient(0,pad.t,0,h-pad.b); grad.addColorStop(0,'rgba(47,224,138,.22)'); grad.addColorStop(1,'rgba(47,224,138,0)');
+  ctx.beginPath(); eq.forEach((v,i)=>{const x=X(i),y=Y(v); i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+  ctx.lineTo(X(eq.length-1),h-pad.b); ctx.lineTo(X(0),h-pad.b); ctx.closePath(); ctx.fillStyle=grad; ctx.fill();
+  const col = eq[eq.length-1]>=1?C.bull:C.bear;
+  line(ctx, eq, X, Y, col, 1.6);
+  ctx.fillStyle=col; ctx.font='11px monospace'; ctx.textAlign='left'; ctx.fillText(eq[eq.length-1].toFixed(2)+'x', w-40, Y(eq[eq.length-1])+4);
+}
+function renderForecast(fc){
+  const el=$('forecast'); if(!fc){ el.innerHTML=''; return; }
+  const lab={1:'1d',5:'5d',20:'20d'};
+  el.innerHTML = fc.map(r=>{
+    const seg=(k)=>{ const v=r[k]*100; return v<1?'':`<span class="fc-seg ${k}" style="flex:${r[k]}" title="${k} ${v.toFixed(0)}%">${v>=12?Math.round(v)+'%':''}</span>`; };
+    return `<div class="fc-row"><span class="fc-h">${lab[r.h]||r.h}</span><span class="fc-bar">${seg('bear')}${seg('sideways')}${seg('bull')}</span></div>`;
+  }).join('');
 }
 
 /* ---------- news ---------- */

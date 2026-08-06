@@ -91,9 +91,11 @@ def walk_forward_backtest(
     daily_returns = daily_returns.loc[common_index]
 
     if len(labels) < min_train + 30:
-        return {"sharpe": float("nan"), "max_drawdown": float("nan"), "n_trades": 0}
+        return {"sharpe": float("nan"), "max_drawdown": float("nan"), "n_trades": 0,
+                "win_rate": float("nan"), "equity": [], "equity_index": []}
 
     strategy_returns = []
+    equity_dates = []
     for t in range(min_train, len(labels) - 1):
         P_t = build_transition_matrix(labels.iloc[:t])
         current_state = int(labels.iloc[t])
@@ -101,6 +103,7 @@ def walk_forward_backtest(
         position = float(np.sign(signal))  # +1 / 0 / -1 — simple sign
         next_day_return = float(daily_returns.iloc[t + 1])
         strategy_returns.append(position * next_day_return)
+        equity_dates.append(labels.index[t + 1])
 
     sr = np.array(strategy_returns, dtype=float)
     if sr.std(ddof=1) == 0 or not np.isfinite(sr.std(ddof=1)):
@@ -113,4 +116,14 @@ def walk_forward_backtest(
     drawdown = (equity - running_max) / running_max
     max_dd = float(drawdown.min()) if len(drawdown) else float("nan")
 
-    return {"sharpe": sharpe, "max_drawdown": max_dd, "n_trades": int(len(sr))}
+    acted = sr[sr != 0.0]  # only days the strategy took a position
+    win_rate = float((acted > 0).mean()) if len(acted) else float("nan")
+
+    return {
+        "sharpe": sharpe,
+        "max_drawdown": max_dd,
+        "n_trades": int(len(sr)),
+        "win_rate": win_rate,
+        "equity": equity.tolist(),
+        "equity_index": [d.strftime("%Y-%m-%d") for d in equity_dates],
+    }
