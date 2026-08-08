@@ -127,3 +127,40 @@ def walk_forward_backtest(
         "equity": equity.tolist(),
         "equity_index": [d.strftime("%Y-%m-%d") for d in equity_dates],
     }
+
+
+_REGIME_NAMES = {0: "bear", 1: "sideways", 2: "bull"}
+
+
+def regime_performance(close: pd.Series, labels: pd.Series, min_train: int = 252) -> dict:
+    """Walk-forward strategy return bucketed by the regime in force each day.
+
+    Same no-lookahead loop as the backtest, but records which regime the market
+    was in when each day's return was earned. Answers the differentiator
+    question: *in which regime does the strategy actually make money?*
+    """
+    daily_returns = close.pct_change().dropna()
+    common = labels.index.intersection(daily_returns.index)
+    labels = labels.loc[common]
+    daily_returns = daily_returns.loc[common]
+
+    buckets: dict[int, list[float]] = {0: [], 1: [], 2: []}
+    if len(labels) >= min_train + 30:
+        for t in range(min_train, len(labels) - 1):
+            P_t = build_transition_matrix(labels.iloc[:t])
+            state = int(labels.iloc[t])
+            position = float(np.sign(signal_from_matrix(P_t, state)))
+            buckets[state].append(position * float(daily_returns.iloc[t + 1]))
+
+    out = {}
+    for state, name in _REGIME_NAMES.items():
+        arr = np.array(buckets[state], dtype=float)
+        acted = arr[arr != 0.0]
+        out[name] = {
+            "days": int(len(arr)),
+            "traded": int(len(acted)),
+            "winRate": float((acted > 0).mean()) if len(acted) else None,
+            "avgReturn": float(arr.mean()) if len(arr) else None,
+            "totalReturn": float(arr.sum()) if len(arr) else 0.0,
+        }
+    return out

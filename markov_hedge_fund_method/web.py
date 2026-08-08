@@ -29,6 +29,7 @@ from dataclasses import replace
 from .accounts import AccountStore
 from .broker import ReadOnlyError, make_broker
 from .config import Mode, Settings, load_settings
+from .journal import JournalStore
 from .market_data import (
     get_history,
     get_intraday_ohlc,
@@ -128,8 +129,10 @@ class AppState:
         self.settings = settings
         self.demo = demo
         self.accounts = AccountStore()
+        self.journal = JournalStore()
         self.broker = None if demo else make_broker(settings)
         self._state_cache: dict[str, tuple[float, dict]] = {}
+        self._regperf_cache: dict[str, tuple[float, dict]] = {}
         self._news_cache: dict[str, tuple[float, list]] = {}
         self._alpaca_symbols: set[str] | None = None
         self._alpaca_names: dict[str, str] = {}
@@ -214,6 +217,27 @@ class AppState:
         payload["name"] = self.name_for(symbol)
         self._state_cache[symbol] = (time.monotonic(), payload)
         return payload
+
+    def regime_perf_for(self, symbol: str) -> dict:
+        """Model's walk-forward performance bucketed by regime (cached)."""
+        from .regime import label_regimes, regime_performance
+        key = symbol.upper()
+        cached = self._regperf_cache.get(key)
+        if cached and (time.monotonic() - cached[0]) < self.ttl:
+            return cached[1]
+        close, _ = self.close_for(key)
+        labels = label_regimes(close, window=self.settings.window,
+                               threshold=self.settings.threshold)
+        perf = regime_performance(close, labels)
+        self._regperf_cache[key] = (time.monotonic(), perf)
+        return perf
+
+    def journal_regime(self, symbol: str) -> str:
+        """Best-effort current regime for a symbol, for auto-journaling."""
+        try:
+            return self.state_payload(symbol.upper()).get("regime", "")
+        except Exception:  # noqa: BLE001
+            return ""
 
 
 _ORDER_FIELDS = {
@@ -342,6 +366,44 @@ def create_app(state: AppState):
         result = scan(state, syms, top=top)
         result["universe"] = scope
         return result
+
+    @app.get("/api/regime-performance")
+    def regime_perf(symbol: str = "SPY"):
+        symbol = symbol.strip().upper() or "SPY"
+        return {"symbol": symbol, "byRegime": state.regime_perf_for(symbol)}
+
+    @app.get("/api/journal")
+    def journal_list():
+        return {"entries": state.journal.list(), "analytics": state.journal.analytics()}
+
+    @app.post("/api/journal")
+    async def journal_add(request: Request):
+        data = await request.json()
+        if not data.get("symbol"):
+            raise HTTPException(status_code=400, detail="symbol required")
+        entry = state.journal.add(
+            symbol=data.get("symbol"), side=data.get("side", "buy"),
+            qty=data.get("qty"), price=data.get("price"),
+            regime=data.get("regime", ""), tags=data.get("tags"),
+            notes=data.get("notes", ""), pnl=data.get("pnl"),
+            r_multiple=data.get("rMultiple"), source="manual")
+        return {"ok": True, "entry": entry}
+
+    @app.post("/api/journal/update")
+    async def journal_update(request: Request):
+        data = await request.json()
+        fields = {k: data[k] for k in ("tags", "notes", "pnl", "rMultiple", "regime") if k in data}
+        entry = state.journal.update(str(data.get("id", "")), **fields)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="entry not found")
+        return {"ok": True, "entry": entry}
+
+    @app.post("/api/journal/delete")
+    async def journal_delete(request: Request):
+        data = await request.json()
+        if not state.journal.remove(str(data.get("id", ""))):
+            raise HTTPException(status_code=404, detail="entry not found")
+        return {"ok": True}
 
     @app.get("/api/quote")
     def quote(symbol: str = "SPY"):
@@ -476,6 +538,14 @@ def create_app(state: AppState):
             raise HTTPException(status_code=403, detail=str(exc))
         except Exception as exc:  # noqa: BLE001 — Alpaca rejection
             raise HTTPException(status_code=502, detail=f"order rejected: {exc}")
+        # auto-journal the entry with the regime the symbol was in (never fatal)
+        try:
+            state.journal.add(
+                symbol=ticket.symbol, side=getattr(ticket, "side", None) or "buy",
+                qty=ticket.qty, price=ticket.limit_price or ticket.stop_price,
+                regime=state.journal_regime(ticket.symbol), source="order")
+        except Exception:  # noqa: BLE001
+            pass
         return {"id": result.id, "status": result.status, "summary": result.summary}
 
     @app.post("/api/orders/cancel_all")

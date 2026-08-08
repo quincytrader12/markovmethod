@@ -121,6 +121,30 @@
   .tiny-btn.amber:hover{background:var(--amber); color:#0a0a0a}
   .blot-empty{color:var(--dim); padding:10px 4px; font-size:11px; line-height:1.5}
 
+  /* journal / analytics */
+  .perf-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:4px 2px 12px}
+  .perf-card{border:1px solid var(--edge); border-top:2px solid var(--edge); border-radius:4px;
+    padding:9px 11px; background:#07111b}
+  .perf-card.bull{border-top-color:var(--green)}
+  .perf-card.sideways{border-top-color:var(--amber)}
+  .perf-card.bear{border-top-color:var(--red)}
+  .perf-card h5{margin:0 0 7px; font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:var(--ink)}
+  .perf-card .row{display:flex; justify-content:space-between; font-size:11px; color:var(--dim); padding:2px 0}
+  .perf-card .row b{color:var(--ink); font-variant-numeric:tabular-nums}
+  .tiles{display:flex; gap:12px; flex-wrap:wrap; margin:4px 2px 10px}
+  .tile{border:1px solid var(--edge); border-radius:4px; padding:8px 13px; background:#07111b; min-width:92px}
+  .tile .v{font-size:16px; color:var(--cyan2); font-weight:700}
+  .tile .k{font-size:9px; color:var(--dim); letter-spacing:1px; text-transform:uppercase}
+  .jadd{display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin:4px 2px 10px}
+  .jadd input{background:#08121c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
+    padding:4px 6px; font-family:inherit; font-size:11px}
+  .jadd input.s{width:74px} .jadd input.n{width:150px}
+  .jadd button{background:#08121c; border:1px solid var(--cyan); color:var(--cyan); border-radius:3px;
+    padding:4px 11px; cursor:pointer; font-family:inherit; font-size:10px; letter-spacing:1px}
+  .jadd button:hover{background:var(--cyan); color:#00121a}
+  .jtag{display:inline-block; background:rgba(0,229,255,.1); color:var(--cyan2); border:1px solid var(--edge);
+    border-radius:9px; padding:0 7px; font-size:9px; letter-spacing:.5px; margin:0 3px 2px 0; text-transform:uppercase}
+
   /* layout */
   .grid{display:grid; grid-template-columns:288px 1fr 336px; gap:9px; padding:8px; flex:1 1 auto; min-height:0}
   @media (max-width:1200px){ .grid{grid-template-columns:1fr; overflow-y:auto} }
@@ -335,6 +359,8 @@
           title="Scan the market for high-potential setups">⚡ SCAN</span>
     <span class="chip scan-btn" id="btn-blot" onclick="openBlotter()"
           title="Live positions, orders and P&amp;L — close or cancel in one click">▦ BLOTTER</span>
+    <span class="chip scan-btn" id="btn-jrnl" onclick="openJournal()"
+          title="Trade journal + performance broken down by regime">📓 JOURNAL</span>
     <span class="chip" id="chip-acct">ACCT <b id="v-acct">none</b></span>
     <span class="chip"><span class="led off" id="led-conn"></span><b id="v-conn">offline</b></span>
     <span class="chip clock" id="clock">--:--:--</span>
@@ -1103,11 +1129,111 @@ async function cancelOrd(id){
   catch(e){ log('cancel failed: '+e.message,'err'); }
 }
 
+/* ---------- trading journal + analytics ---------- */
+function openJournal(){ $('jrnl-modal').classList.add('open'); loadJournal(); }
+function closeJournal(){ $('jrnl-modal').classList.remove('open'); }
+function pctOrDash(x){ return x==null?'—':(x*100).toFixed(1)+'%'; }
+async function loadJournal(){
+  const body=$('jrnl-body'); body.innerHTML='<div class="blot-empty">loading…</div>';
+  let perf, jr;
+  try{
+    [perf, jr] = await Promise.all([
+      api('/api/regime-performance?symbol='+encodeURIComponent(SYMBOL)),
+      api('/api/journal')
+    ]);
+  }catch(e){ body.innerHTML='<div class="blot-empty">failed: '+esc(e.message)+'</div>'; return; }
+  body.innerHTML = renderRegimePerf(perf) + renderJournalBody(jr);
+}
+function renderRegimePerf(perf){
+  const order=[['bull','BULL'],['sideways','SIDEWAYS'],['bear','BEAR']];
+  const cards = order.map(([k,lbl])=>{
+    const r=(perf.byRegime&&perf.byRegime[k])||{};
+    const avg = r.avgReturn==null?'—':(r.avgReturn*100).toFixed(3)+'%';
+    const tot = r.totalReturn==null?'—':(r.totalReturn*100).toFixed(1)+'%';
+    return '<div class="perf-card '+k+'"><h5>'+lbl+'</h5>'+
+      '<div class="row"><span>Win rate</span><b>'+pctOrDash(r.winRate)+'</b></div>'+
+      '<div class="row"><span>Avg day</span><b>'+avg+'</b></div>'+
+      '<div class="row"><span>Total</span><b>'+tot+'</b></div>'+
+      '<div class="row"><span>Days traded</span><b>'+(r.traded==null?'—':r.traded)+'</b></div></div>';
+  }).join('');
+  return '<h4>Model performance by regime — '+esc(perf.symbol)+'</h4>'+
+    '<div class="perf-grid">'+cards+'</div>';
+}
+function renderJournalBody(jr){
+  const a=jr.analytics.totals;
+  const tiles='<div class="tiles">'+
+    '<div class="tile"><div class="v">'+a.trades+'</div><div class="k">trades</div></div>'+
+    '<div class="tile"><div class="v">'+a.closed+'</div><div class="k">closed</div></div>'+
+    '<div class="tile"><div class="v">'+pctOrDash(a.winRate)+'</div><div class="k">win rate</div></div>'+
+    '<div class="tile"><div class="v '+(a.pnl>=0?'pl-pos':'pl-neg')+'">$'+fmt(a.pnl)+'</div><div class="k">net p&amp;l</div></div>'+
+    '</div>';
+  const add='<div class="jadd">'+
+    '<input class="s" id="j-sym" placeholder="SYMBOL">'+
+    '<input class="s" id="j-side" placeholder="buy/sell">'+
+    '<input class="s" id="j-qty" placeholder="qty">'+
+    '<input class="s" id="j-price" placeholder="price">'+
+    '<input class="n" id="j-tags" placeholder="tags (comma)">'+
+    '<input class="n" id="j-notes" placeholder="notes">'+
+    '<button onclick="addJournalEntry()">+ LOG TRADE</button></div>';
+  let table;
+  if(!jr.entries.length){
+    table='<div class="blot-empty">No trades logged yet. Orders you place are auto-journaled '+
+      'with the regime at entry — or log one manually above.</div>';
+  }else{
+    const rows=jr.entries.map(e=>{
+      const tags=(e.tags||[]).map(t=>'<span class="jtag">'+esc(t)+'</span>').join('');
+      const pnl=e.pnl==null?'<span style="color:var(--dim)">—</span>':
+        '<span class="'+(e.pnl>=0?'pl-pos':'pl-neg')+'">$'+fmt(e.pnl)+'</span>';
+      const rm=e.rMultiple==null?'':' · '+e.rMultiple+'R';
+      const reg=e.regime?'<span class="jtag">'+esc(e.regime)+'</span>':'';
+      return '<tr><td>'+esc(e.date)+'</td><td><b>'+esc(e.symbol)+'</b></td>'+
+        '<td class="'+(e.side==='sell'?'side-short':'side-long')+'">'+esc((e.side||'').toUpperCase())+'</td>'+
+        '<td class="num">'+(e.qty==null?'—':esc(e.qty))+'</td>'+
+        '<td class="num">'+(e.price==null?'—':'$'+fmt(e.price))+'</td>'+
+        '<td>'+reg+'</td>'+
+        '<td>'+tags+'<div style="color:var(--dim);font-size:10px">'+esc(e.notes||'')+'</div></td>'+
+        '<td class="num">'+pnl+rm+'</td>'+
+        '<td class="num"><button class="tiny-btn amber" onclick="closeJournalTrade(\''+e.id+'\')">P&amp;L</button> '+
+        '<button class="tiny-btn" onclick="delJournal(\''+e.id+'\')">✕</button></td></tr>';
+    }).join('');
+    table='<table class="blot"><thead><tr><th>When</th><th>Symbol</th><th>Side</th>'+
+      '<th class="num">Qty</th><th class="num">Price</th><th>Regime</th><th>Tags / notes</th>'+
+      '<th class="num">P&amp;L</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }
+  return '<h4>Your journal</h4>'+tiles+add+table;
+}
+async function addJournalEntry(){
+  const sym=$('j-sym').value.trim(); if(!sym){ log('journal: symbol required','err'); return; }
+  const body={symbol:sym, side:($('j-side').value.trim()||'buy'),
+    qty:numOrNull('j-qty'), price:numOrNull('j-price'),
+    tags:$('j-tags').value.split(',').map(s=>s.trim()).filter(Boolean),
+    notes:$('j-notes').value.trim()};
+  try{ await api('/api/journal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+       log('trade logged','ok'); loadJournal(); }
+  catch(e){ log('journal add failed: '+e.message,'err'); }
+}
+async function closeJournalTrade(id){
+  const pnl=prompt('Realized P&L for this trade ($)?'); if(pnl===null||pnl.trim()==='') return;
+  const r=prompt('R-multiple (optional, e.g. 1.5)?','');
+  const body={id:id, pnl:Number(pnl)};
+  if(r!==null && r.trim()!=='') body.rMultiple=Number(r);
+  try{ await api('/api/journal/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+       loadJournal(); }
+  catch(e){ log('journal update failed: '+e.message,'err'); }
+}
+async function delJournal(id){
+  if(!confirm('Delete this journal entry?')) return;
+  try{ await api('/api/journal/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});
+       loadJournal(); }
+  catch(e){ log('journal delete failed: '+e.message,'err'); }
+}
+
 function wireControls(){
-  // scanner + blotter: Escape closes, clicking the backdrop closes
-  document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeScanner(); closeBlotter(); } });
+  // scanner + blotter + journal: Escape closes, clicking the backdrop closes
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeScanner(); closeBlotter(); closeJournal(); } });
   $('scan-modal').addEventListener('click', e=>{ if(e.target.id==='scan-modal') closeScanner(); });
   $('blot-modal').addEventListener('click', e=>{ if(e.target.id==='blot-modal') closeBlotter(); });
+  $('jrnl-modal').addEventListener('click', e=>{ if(e.target.id==='jrnl-modal') closeJournal(); });
   // timeframe buttons
   document.querySelectorAll('#tfbar button').forEach(b=>{
     b.onclick = ()=>{ const raw=b.dataset.tf; setTF(/^\d+$/.test(raw)?parseInt(raw,10):raw, b); };
@@ -1170,6 +1296,18 @@ boot();
     </div>
     <div class="blot-acct" id="blot-acct"></div>
     <div class="blot-body" id="blot-body"></div>
+  </div>
+</div>
+
+<div class="modal" id="jrnl-modal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>📓 Trading Journal</h3>
+      <div class="spacer"></div>
+      <button class="btn-x" onclick="loadJournal()">⟳ Refresh</button>
+      <button class="btn-x" onclick="closeJournal()">✕ Close</button>
+    </div>
+    <div class="blot-body" id="jrnl-body"></div>
   </div>
 </div>
 </body>
