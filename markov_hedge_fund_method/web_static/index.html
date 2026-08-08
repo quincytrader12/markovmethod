@@ -55,6 +55,51 @@
   .led.on{color:var(--green)} .led.off{color:var(--red)} .led.warn{color:var(--amber)}
   .clock{color:var(--cyan2); letter-spacing:2px}
 
+  /* opportunity scanner */
+  .scan-btn{cursor:pointer; border-color:var(--cyan); color:var(--cyan); font-weight:700}
+  .scan-btn:hover{box-shadow:0 0 12px rgba(0,229,255,.35)}
+  .modal{position:fixed; inset:0; background:rgba(3,8,14,.82); z-index:60;
+    display:none; align-items:flex-start; justify-content:center}
+  .modal.open{display:flex}
+  .modal-box{margin-top:3.5vh; width:min(940px,95vw); max-height:92vh; display:flex; flex-direction:column;
+    background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--cyan);
+    border-radius:6px; box-shadow:0 0 44px rgba(0,229,255,.18)}
+  .modal-head{display:flex; align-items:center; gap:10px; padding:11px 15px; border-bottom:1px solid var(--edge); flex:0 0 auto}
+  .modal-head h3{margin:0; font-size:13px; letter-spacing:2px; color:var(--cyan); text-transform:uppercase; white-space:nowrap}
+  .modal-head .spacer{flex:1}
+  .seg{display:flex; border:1px solid var(--edge); border-radius:3px; overflow:hidden}
+  .seg button{background:#08121c; border:0; color:var(--dim); font-family:inherit; font-size:10px;
+    letter-spacing:1px; padding:4px 10px; cursor:pointer; text-transform:uppercase}
+  .seg button.on{background:var(--cyan); color:#00121a; font-weight:700}
+  .btn-x{background:#08121c; border:1px solid var(--edge); color:var(--ink); border-radius:3px; cursor:pointer;
+    padding:4px 10px; font-family:inherit; font-size:11px; letter-spacing:1px}
+  .btn-x:hover{border-color:var(--cyan); color:var(--cyan)}
+  .scan-list{overflow-y:auto; padding:10px 14px; display:flex; flex-direction:column; gap:8px}
+  .scan-card{border:1px solid var(--edge); border-left:3px solid var(--edge); border-radius:4px;
+    padding:9px 12px; background:#07111b}
+  .scan-card.strong,.scan-card.buy{border-left-color:var(--green)}
+  .scan-card.watch{border-left-color:var(--amber)}
+  .scan-card.avoid{border-left-color:var(--red)}
+  .scan-top{display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+  .scan-sym{font-weight:700; color:var(--ink); letter-spacing:1px; font-size:14px}
+  .scan-name{color:var(--dim); font-size:11px}
+  .scan-top .spacer{flex:1}
+  .badge{font-size:10px; letter-spacing:1px; text-transform:uppercase; padding:2px 9px; border-radius:11px; font-weight:700}
+  .badge.strong{background:rgba(0,255,140,.15); color:var(--green); border:1px solid var(--green)}
+  .badge.buy{background:rgba(0,229,255,.12); color:var(--cyan); border:1px solid var(--cyan)}
+  .badge.watch{background:rgba(255,190,60,.12); color:var(--amber); border:1px solid var(--amber)}
+  .badge.avoid{background:rgba(255,77,94,.12); color:var(--red); border:1px solid var(--red)}
+  .scan-score{font-weight:700; font-size:17px; color:var(--cyan2); min-width:40px; text-align:right}
+  .scan-why{color:var(--ink); font-size:11.5px; line-height:1.5; margin:6px 0 5px; opacity:.92}
+  .scan-meta{display:flex; gap:11px; align-items:center; flex-wrap:wrap; color:var(--dim); font-size:10px; letter-spacing:.5px}
+  .scan-meta b{color:var(--ink)}
+  .scan-actions{margin-left:auto}
+  .scan-actions button{background:#08121c; border:1px solid var(--cyan); color:var(--cyan); border-radius:3px;
+    padding:3px 11px; cursor:pointer; font-family:inherit; font-size:10px; letter-spacing:1px; font-weight:700}
+  .scan-actions button:hover{background:var(--cyan); color:#00121a}
+  .scan-foot{padding:8px 15px; border-top:1px solid var(--edge); color:var(--dim); font-size:9.5px; line-height:1.4; flex:0 0 auto}
+  .scan-loading{padding:30px; text-align:center; color:var(--cyan); letter-spacing:1px}
+
   /* layout */
   .grid{display:grid; grid-template-columns:288px 1fr 336px; gap:9px; padding:8px; flex:1 1 auto; min-height:0}
   @media (max-width:1200px){ .grid{grid-template-columns:1fr; overflow-y:auto} }
@@ -265,6 +310,8 @@
         <option value="live">LIVE</option>
       </select>
     </span>
+    <span class="chip scan-btn" id="btn-scan" onclick="openScanner()"
+          title="Scan the market for high-potential setups">⚡ SCAN</span>
     <span class="chip" id="chip-acct">ACCT <b id="v-acct">none</b></span>
     <span class="chip"><span class="led off" id="led-conn"></span><b id="v-conn">offline</b></span>
     <span class="chip clock" id="clock">--:--:--</span>
@@ -904,7 +951,61 @@ async function removeAccount(name){
 }
 
 /* ---------- wiring ---------- */
+/* ---------- opportunity scanner ---------- */
+let SCAN_U='market';
+function openScanner(){ $('scan-modal').classList.add('open'); runScan(); }
+function closeScanner(){ $('scan-modal').classList.remove('open'); }
+function setScanUniverse(u){
+  SCAN_U=u;
+  document.querySelectorAll('#scan-seg button').forEach(b=>b.classList.toggle('on', b.dataset.u===u));
+  runScan();
+}
+function vClass(v){ return v==='Strong Buy'?'strong': v==='Buy'?'buy': v==='Watch'?'watch':'avoid'; }
+async function runScan(){
+  const list=$('scan-list');
+  list.innerHTML='<div class="scan-loading">Scanning '+(SCAN_U==='watchlist'?'your watchlist':'the market')+
+    ' — running the regime engine on each name…</div>';
+  $('scan-foot').textContent='';
+  try{
+    const d=await api('/api/scan?top=15&universe='+SCAN_U);
+    renderScan(d);
+  }catch(e){ list.innerHTML='<div class="scan-loading">scan failed: '+esc(e.message)+'</div>'; }
+}
+function renderScan(d){
+  const list=$('scan-list');
+  if(!d.results || !d.results.length){ list.innerHTML='<div class="scan-loading">no results</div>'; return; }
+  list.innerHTML = d.results.map((r,i)=>{
+    const c=vClass(r.verdict);
+    const sh=(r.sharpe==null?'—':r.sharpe), wr=(r.winRate==null?'—':Math.round(r.winRate*100)+'%');
+    return `<div class="scan-card ${c}">
+      <div class="scan-top">
+        <span class="scan-sym">#${i+1} ${esc(r.symbol)}</span>
+        <span class="scan-name">${esc(r.name)}</span>
+        <span class="spacer"></span>
+        <span class="badge ${c}">${esc(r.verdict)}</span>
+        <span class="scan-score" title="composite 0-100">${r.score}</span>
+      </div>
+      <div class="scan-why">${esc(r.rationale)}</div>
+      <div class="scan-meta">
+        <span>REGIME <b>${esc(r.regime)}</b></span>
+        <span>BULL 5d <b>${r.forecastBull}%</b></span>
+        <span>RSI <b>${r.rsi}</b></span>
+        <span>MOM <b>${r.momentum}%</b></span>
+        <span>SHARPE <b>${sh}</b></span>
+        <span>WIN <b>${wr}</b></span>
+        <span>PRICE <b>$${r.lastPrice}</b></span>
+        <span class="scan-actions"><button onclick="loadFromScan('${esc(r.symbol)}')">LOAD →</button></span>
+      </div>
+    </div>`;
+  }).join('');
+  $('scan-foot').textContent = `Scanned ${d.scanned} symbols · ${d.scannedAt} · ${d.disclaimer}`;
+}
+function loadFromScan(s){ closeScanner(); selectSymbol(s, true); }
+
 function wireControls(){
+  // scanner: Escape closes, clicking the backdrop closes
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeScanner(); });
+  $('scan-modal').addEventListener('click', e=>{ if(e.target.id==='scan-modal') closeScanner(); });
   // timeframe buttons
   document.querySelectorAll('#tfbar button').forEach(b=>{
     b.onclick = ()=>{ const raw=b.dataset.tf; setTF(/^\d+$/.test(raw)?parseInt(raw,10):raw, b); };
@@ -939,5 +1040,22 @@ async function boot(){
 }
 boot();
 </script>
+
+<div class="modal" id="scan-modal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>⚡ Opportunity Scanner</h3>
+      <div class="seg" id="scan-seg">
+        <button data-u="market" class="on" onclick="setScanUniverse('market')">Market</button>
+        <button data-u="watchlist" onclick="setScanUniverse('watchlist')">Watchlist</button>
+      </div>
+      <button class="btn-x" onclick="runScan()">⟳ Rescan</button>
+      <div class="spacer"></div>
+      <button class="btn-x" onclick="closeScanner()">✕ Close</button>
+    </div>
+    <div class="scan-list" id="scan-list"></div>
+    <div class="scan-foot" id="scan-foot"></div>
+  </div>
+</div>
 </body>
 </html>

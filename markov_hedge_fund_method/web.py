@@ -60,6 +60,14 @@ SYMBOL_UNIVERSE = sorted(set(DEFAULT_SYMBOLS + [
     "SLV", "USO", "TLT", "HYG", "BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD",
 ]))
 
+# A liquid subset the opportunity scanner sweeps by default. Kept modest so a
+# scan stays responsive (each symbol runs the full regime + walk-forward brain).
+SCAN_UNIVERSE = [
+    "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD",
+    "AVGO", "NFLX", "COST", "JPM", "V", "UNH", "LLY", "XOM", "HD", "WMT",
+    "PLTR", "COIN", "CRWD", "BTC-USD",
+]
+
 
 # Full names for the bundled universe (tooltips). When connected to Alpaca the
 # real asset names are used for every symbol; this covers the offline case.
@@ -320,6 +328,20 @@ def create_app(state: AppState):
         ]
         return {"symbol": symbol, "tf": tf, "bars": bars, "ma20": ser(ma20), "ma50": ser(ma50),
                 "rsi": ser(rsi), "momentum": ser(mom), "source": source}
+
+    @app.get("/api/scan")
+    def scan_endpoint(symbols: str = "", top: int = 12, universe: str = ""):
+        from .scanner import scan
+        if symbols.strip():
+            syms = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+            scope = "custom"
+        elif universe.strip().lower() == "watchlist":
+            syms, scope = DEFAULT_SYMBOLS, "watchlist"
+        else:
+            syms, scope = SCAN_UNIVERSE, "market"
+        result = scan(state, syms, top=top)
+        result["universe"] = scope
+        return result
 
     @app.get("/api/quote")
     def quote(symbol: str = "SPY"):
