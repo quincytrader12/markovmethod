@@ -145,6 +145,32 @@
   .jtag{display:inline-block; background:rgba(0,229,255,.1); color:var(--cyan2); border:1px solid var(--edge);
     border-radius:9px; padding:0 7px; font-size:9px; letter-spacing:.5px; margin:0 3px 2px 0; text-transform:uppercase}
 
+  /* alerts + risk */
+  .toast-wrap{position:fixed; top:14px; right:14px; z-index:80; display:flex; flex-direction:column;
+    gap:8px; max-width:340px; pointer-events:none}
+  .toast{border:1px solid var(--cyan); border-left:3px solid var(--cyan); background:linear-gradient(180deg,#0b1622,#070d15);
+    border-radius:4px; padding:9px 12px; color:var(--ink); font-size:12px; box-shadow:0 0 18px rgba(0,229,255,.18);
+    transition:opacity .3s}
+  .toast.bull{border-color:var(--green); border-left-color:var(--green)}
+  .toast.bear{border-color:var(--red); border-left-color:var(--red); box-shadow:0 0 18px rgba(255,77,94,.22)}
+  .toast small{display:block; color:var(--dim); font-size:9px; letter-spacing:1px; margin-top:3px; text-transform:uppercase}
+  .halted-chip{border-color:var(--red)!important; color:var(--red)!important; font-weight:700; animation:pulse 1.2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+  .bell-badge{background:var(--red); color:#fff; border-radius:9px; padding:0 5px; font-size:9px; margin-left:5px}
+  .risk-row{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:4px 2px 12px}
+  .risk-row input{background:#08121c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
+    padding:5px 8px; font-family:inherit; font-size:12px; width:120px}
+  .kill-btn{background:rgba(255,77,94,.12); border:1px solid var(--red); color:var(--red); border-radius:4px;
+    padding:8px 16px; cursor:pointer; font-family:inherit; font-size:12px; letter-spacing:1px; font-weight:700}
+  .kill-btn:hover{background:var(--red); color:#0a0a0a}
+  .halt-banner{background:rgba(255,77,94,.14); border:1px solid var(--red); color:var(--red); border-radius:4px;
+    padding:8px 12px; margin:4px 2px 10px; font-size:12px; display:flex; align-items:center; gap:10px}
+  .ev-row{display:flex; gap:10px; padding:5px 4px; border-bottom:1px solid rgba(255,255,255,.045); font-size:11px}
+  .ev-row .t{color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap}
+  .ev-row.bull .m{color:var(--green)} .ev-row.bear .m{color:var(--red)} .ev-row.info .m{color:var(--cyan2)}
+  .seg-sel{background:#08121c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
+    padding:5px; font-family:inherit; font-size:12px}
+
   /* layout */
   .grid{display:grid; grid-template-columns:288px 1fr 336px; gap:9px; padding:8px; flex:1 1 auto; min-height:0}
   @media (max-width:1200px){ .grid{grid-template-columns:1fr; overflow-y:auto} }
@@ -361,6 +387,9 @@
           title="Live positions, orders and P&amp;L — close or cancel in one click">▦ BLOTTER</span>
     <span class="chip scan-btn" id="btn-jrnl" onclick="openJournal()"
           title="Trade journal + performance broken down by regime">📓 JOURNAL</span>
+    <span class="chip scan-btn" id="btn-alerts" onclick="openAlerts()"
+          title="Regime-flip & price alerts, kill switch, daily-loss limit">🔔 ALERTS<span id="bell-badge"></span></span>
+    <span class="chip halted-chip" id="halt-ind" style="display:none">⛔ HALTED</span>
     <span class="chip" id="chip-acct">ACCT <b id="v-acct">none</b></span>
     <span class="chip"><span class="led off" id="led-conn"></span><b id="v-conn">offline</b></span>
     <span class="chip clock" id="clock">--:--:--</span>
@@ -1228,12 +1257,132 @@ async function delJournal(id){
   catch(e){ log('journal delete failed: '+e.message,'err'); }
 }
 
+/* ---------- alerts + risk automation ---------- */
+let NOTIFY=false, SEEN=new Set(), BELL=0, HALTED=false;
+let LAST_ALERTS={priceAlerts:[], recent:[], lossLimit:null, dayPl:null, halted:false};
+function openAlerts(){ $('alrt-modal').classList.add('open'); renderAlerts(); loadAlerts(); BELL=0; updateBell(); }
+function closeAlerts(){ $('alrt-modal').classList.remove('open'); }
+function updateBell(){ const b=$('bell-badge'); if(b){ b.textContent=BELL?BELL:''; b.className=BELL?'bell-badge':''; } }
+function beep(level){
+  try{
+    const A=window.AudioContext||window.webkitAudioContext; if(!A) return;
+    const a=new A(), o=a.createOscillator(), g=a.createGain();
+    o.type='sine'; o.frequency.value = level==='bear'?300:660;
+    o.connect(g); g.connect(a.destination);
+    g.gain.setValueAtTime(0.0001,a.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.15,a.currentTime+0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001,a.currentTime+0.35);
+    o.start(); o.stop(a.currentTime+0.37);
+  }catch(e){}
+}
+function toast(ev){
+  const w=$('toast-wrap'); if(!w) return;
+  const d=document.createElement('div');
+  d.className='toast '+(ev.level||'info');
+  d.innerHTML=esc(ev.message)+'<small>'+esc(ev.at||'')+' · '+esc(ev.type||'')+'</small>';
+  w.appendChild(d);
+  setTimeout(()=>{ d.style.opacity='0'; setTimeout(()=>d.remove(),300); }, 8000);
+}
+function updateNotifyBtn(){ const b=$('notify-btn'); if(b) b.textContent = NOTIFY?'🔔 Notifications on':'🔕 Notifications'; }
+function toggleNotify(){
+  if(!('Notification' in window)){ log('desktop notifications not supported here','warn'); return; }
+  if(Notification.permission==='granted'){ NOTIFY=!NOTIFY; updateNotifyBtn(); return; }
+  Notification.requestPermission().then(p=>{ NOTIFY=(p==='granted'); updateNotifyBtn(); });
+}
+function desktopNotify(ev){
+  if(NOTIFY && 'Notification' in window && Notification.permission==='granted'){
+    try{ new Notification('Mamba Terminal', {body:ev.message}); }catch(e){}
+  }
+}
+function fireEvents(events){
+  for(const ev of events){
+    if(SEEN.has(ev.id)) continue; SEEN.add(ev.id);
+    toast(ev); beep(ev.level); desktopNotify(ev);
+    if(!$('alrt-modal').classList.contains('open')) BELL++;
+  }
+  updateBell();
+}
+function setHalted(h){ HALTED=h; const ind=$('halt-ind'); if(ind) ind.style.display = h?'inline-block':'none'; }
+async function pollAlerts(){
+  const syms=currentWatch().join(',');
+  let d; try{ d=await api('/api/alerts?symbols='+encodeURIComponent(syms)); }catch(e){ return; }
+  LAST_ALERTS=d; setHalted(d.halted);
+  if(d.events && d.events.length) fireEvents(d.events);
+  if($('alrt-modal').classList.contains('open')) renderAlerts();
+}
+function loadAlerts(){ return pollAlerts(); }
+function renderAlerts(){
+  const d=LAST_ALERTS, body=$('alrt-body'); if(!body) return;
+  const ll = d.lossLimit==null?'':d.lossLimit;
+  const dp = d.dayPl==null?'—':'$'+fmt(d.dayPl);
+  const halt = HALTED ? '<div class="halt-banner">⛔ <b>TRADING HALTED</b> — kill switch active; new orders are '+
+    'blocked. <button class="btn-x" onclick="resetKill()">Reset</button></div>' : '';
+  const risk = '<h4>Risk controls</h4>'+halt+
+    '<div class="risk-row">Daily loss limit&nbsp; $ <input id="ll-in" type="number" placeholder="none" value="'+ll+'">'+
+    '<button class="btn-x" onclick="saveLossLimit()">Save</button>'+
+    '<span style="color:var(--dim)">day P&amp;L '+dp+'</span></div>'+
+    '<div class="risk-row"><button class="kill-btn" onclick="killSwitch()">🛑 KILL SWITCH — Flatten &amp; Halt</button></div>';
+  let pa='<h4>Price alerts</h4><div class="jadd">'+
+    '<input class="s" id="pa-sym" placeholder="SYMBOL">'+
+    '<select class="seg-sel" id="pa-op"><option value="above">rises above</option>'+
+    '<option value="below">falls below</option></select>'+
+    '<input class="s" id="pa-price" placeholder="price">'+
+    '<button onclick="addPriceAlert()">+ ADD</button></div>';
+  if(d.priceAlerts && d.priceAlerts.length){
+    pa+='<table class="blot"><tbody>'+d.priceAlerts.map(a=>
+      '<tr><td><b>'+esc(a.symbol)+'</b></td><td>'+(a.op==='above'?'▲ above':'▼ below')+'</td>'+
+      '<td class="num">$'+fmt(a.price)+'</td><td>'+(a.active?'<span class="pl-pos">armed</span>':
+        '<span style="color:var(--dim)">fired</span>')+'</td>'+
+      '<td class="num"><button class="tiny-btn" onclick="delPriceAlert(\''+a.id+'\')">✕</button></td></tr>'
+    ).join('')+'</tbody></table>';
+  }else{ pa+='<div class="blot-empty">no price alerts</div>'; }
+  let ev='<h4>Recent alerts</h4>';
+  if(d.recent && d.recent.length){
+    ev+=d.recent.map(e=>'<div class="ev-row '+(e.level||'info')+'"><span class="t">'+esc(e.at||'')+
+      '</span><span class="m">'+esc(e.message)+'</span></div>').join('');
+  }else{ ev+='<div class="blot-empty">no alerts yet — regime flips on your watchlist and price triggers appear here</div>'; }
+  body.innerHTML=risk+pa+ev;
+}
+async function saveLossLimit(){
+  const v=$('ll-in').value.trim();
+  try{ await api('/api/risk/limit',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({lossLimit: v===''?null:Number(v)})});
+       log('daily loss limit saved','ok'); pollAlerts(); }
+  catch(e){ log('save failed: '+e.message,'err'); }
+}
+async function killSwitch(){
+  if(!confirm('KILL SWITCH — cancel all orders, close all positions, and halt trading?')) return;
+  try{ await api('/api/kill',{method:'POST'}); setHalted(true);
+       log('KILL SWITCH activated — trading halted','err'); pollAlerts();
+       if($('blot-modal').classList.contains('open')) loadBlotter(); }
+  catch(e){ log('kill failed: '+e.message,'err'); }
+}
+async function resetKill(){
+  try{ await api('/api/kill/reset',{method:'POST'}); setHalted(false);
+       log('kill switch reset — trading enabled','ok'); pollAlerts(); }
+  catch(e){ log('reset failed: '+e.message,'err'); }
+}
+async function addPriceAlert(){
+  const sym=$('pa-sym').value.trim(), price=$('pa-price').value.trim();
+  if(!sym||price===''){ log('price alert needs symbol + price','err'); return; }
+  try{ await api('/api/alerts/price',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({symbol:sym, op:$('pa-op').value, price:Number(price)})});
+       pollAlerts(); }
+  catch(e){ log('add alert failed: '+e.message,'err'); }
+}
+async function delPriceAlert(id){
+  try{ await api('/api/alerts/price/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({id:id})}); pollAlerts(); }
+  catch(e){ log('delete failed: '+e.message,'err'); }
+}
+
 function wireControls(){
-  // scanner + blotter + journal: Escape closes, clicking the backdrop closes
-  document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeScanner(); closeBlotter(); closeJournal(); } });
+  // scanner + blotter + journal + alerts: Escape closes, backdrop click closes
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeScanner(); closeBlotter(); closeJournal(); closeAlerts(); } });
   $('scan-modal').addEventListener('click', e=>{ if(e.target.id==='scan-modal') closeScanner(); });
   $('blot-modal').addEventListener('click', e=>{ if(e.target.id==='blot-modal') closeBlotter(); });
   $('jrnl-modal').addEventListener('click', e=>{ if(e.target.id==='jrnl-modal') closeJournal(); });
+  $('alrt-modal').addEventListener('click', e=>{ if(e.target.id==='alrt-modal') closeAlerts(); });
   // timeframe buttons
   document.querySelectorAll('#tfbar button').forEach(b=>{
     b.onclick = ()=>{ const raw=b.dataset.tf; setTF(/^\d+$/.test(raw)?parseInt(raw,10):raw, b); };
@@ -1262,9 +1411,12 @@ async function boot(){
   await loadAccounts();
   await loadPortfolio();
   log('terminal online — Markov regime engine ready','ok');
+  updateNotifyBtn();
+  pollAlerts();
   setInterval(()=>{ loadState(true); loadPortfolio(); }, 15000);
   setInterval(()=>{ loadNews(); }, 120000);
   setInterval(()=>refreshWatchlist(currentWatch()), 30000);
+  setInterval(pollAlerts, 20000);
 }
 boot();
 </script>
@@ -1310,5 +1462,20 @@ boot();
     <div class="blot-body" id="jrnl-body"></div>
   </div>
 </div>
+
+<div class="modal" id="alrt-modal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>🔔 Alerts &amp; Risk</h3>
+      <div class="spacer"></div>
+      <button class="btn-x" id="notify-btn" onclick="toggleNotify()">🔕 Notifications</button>
+      <button class="btn-x" onclick="loadAlerts()">⟳ Refresh</button>
+      <button class="btn-x" onclick="closeAlerts()">✕ Close</button>
+    </div>
+    <div class="blot-body" id="alrt-body"></div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toast-wrap"></div>
 </body>
 </html>

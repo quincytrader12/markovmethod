@@ -27,6 +27,7 @@ import time
 from dataclasses import replace
 
 from .accounts import AccountStore
+from .alerts import AlertEngine
 from .broker import ReadOnlyError, make_broker
 from .config import Mode, Settings, load_settings
 from .journal import JournalStore
@@ -130,6 +131,7 @@ class AppState:
         self.demo = demo
         self.accounts = AccountStore()
         self.journal = JournalStore()
+        self.alerts = AlertEngine()
         self.broker = None if demo else make_broker(settings)
         self._state_cache: dict[str, tuple[float, dict]] = {}
         self._regperf_cache: dict[str, tuple[float, dict]] = {}
@@ -405,6 +407,82 @@ def create_app(state: AppState):
             raise HTTPException(status_code=404, detail="entry not found")
         return {"ok": True}
 
+    # ── alerts + risk automation ─────────────────────────────────────────────
+    @app.get("/api/alerts")
+    def alerts(symbols: str = ""):
+        syms = [s.strip().upper() for s in symbols.split(",") if s.strip()][:16]
+        events = []
+        if syms:
+            regimes, prices = {}, {}
+            for s in syms:
+                cached = state._state_cache.get(s)
+                if cached and (time.monotonic() - cached[0]) < state.ttl:
+                    regimes[s] = cached[1].get("regime", "")
+                    prices[s] = cached[1].get("lastPrice")
+                    continue
+                try:
+                    close, _ = state.close_for(s)
+                    q = quote_state(close, s, window=state.settings.window,
+                                    threshold=state.settings.threshold)
+                    regimes[s], prices[s] = q["regime"], q["lastPrice"]
+                except Exception:  # noqa: BLE001
+                    pass
+            events += state.alerts.check_regimes(regimes)
+            events += state.alerts.check_prices(prices)
+
+        day_pl = None
+        if state.broker is not None:
+            try:
+                acct = state.broker.get_account()
+                day_pl = round(acct.equity - acct.last_equity, 2) if acct.last_equity else 0.0
+                breach = state.alerts.check_loss_limit(day_pl)
+                if breach is not None:
+                    _flatten()
+                    events.append(breach)
+            except Exception:  # noqa: BLE001
+                pass
+
+        return {"events": events, "recent": state.alerts.recent(),
+                "halted": state.alerts.halted, "lossLimit": state.alerts.loss_limit,
+                "dayPl": day_pl, "priceAlerts": state.alerts.price_alerts()}
+
+    @app.post("/api/alerts/price")
+    async def add_price_alert(request: Request):
+        data = await request.json()
+        sym = str(data.get("symbol", "")).strip().upper()
+        op = str(data.get("op", "above")).lower()
+        price = data.get("price")
+        if not sym or op not in ("above", "below") or price is None:
+            raise HTTPException(status_code=400,
+                                detail="need symbol, op ('above'/'below') and price")
+        alert = state.alerts.add_price_alert(sym, op, float(price))
+        return {"ok": True, "alert": alert, "priceAlerts": state.alerts.price_alerts()}
+
+    @app.post("/api/alerts/price/delete")
+    async def delete_price_alert(request: Request):
+        data = await request.json()
+        state.alerts.remove_price_alert(str(data.get("id", "")))
+        return {"ok": True, "priceAlerts": state.alerts.price_alerts()}
+
+    @app.post("/api/risk/limit")
+    async def set_risk_limit(request: Request):
+        data = await request.json()
+        state.alerts.set_loss_limit(data.get("lossLimit"))
+        return {"ok": True, "lossLimit": state.alerts.loss_limit}
+
+    @app.post("/api/kill")
+    def kill_switch():
+        event = state.alerts.trip_kill("manual kill switch")
+        result = {"ok": True, "halted": True, "event": event, "flattened": None}
+        if state.broker is not None:
+            result["flattened"] = _flatten()
+        return result
+
+    @app.post("/api/kill/reset")
+    def kill_reset():
+        state.alerts.reset_kill()
+        return {"ok": True, "halted": False}
+
     @app.get("/api/quote")
     def quote(symbol: str = "SPY"):
         symbol = symbol.strip().upper() or "SPY"
@@ -522,10 +600,32 @@ def create_app(state: AppState):
         return {"ok": True}
 
     # ── orders ───────────────────────────────────────────────────────────────
+    def _flatten():
+        """Cancel every open order and close every position. Best-effort."""
+        cancelled = 0
+        try:
+            cancelled = state.broker.cancel_all_orders()
+        except Exception:  # noqa: BLE001
+            pass
+        closed = 0
+        try:
+            for p in state.broker.list_positions():
+                try:
+                    state.broker.close_position(p.symbol)
+                    closed += 1
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+        return {"cancelled": cancelled, "closed": closed}
+
     @app.post("/api/orders")
     async def submit_order(request: Request):
         if state.broker is None:
             raise HTTPException(status_code=403, detail="No account connected. Add one under Accounts.")
+        if state.alerts.halted:
+            raise HTTPException(status_code=423,
+                                detail="Trading is HALTED by the kill switch. Reset it in Alerts to place orders.")
         data = await request.json()
         if not isinstance(data, dict) or not data.get("symbol"):
             raise HTTPException(status_code=400, detail="An order needs at least a symbol.")
