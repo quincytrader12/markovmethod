@@ -25,6 +25,7 @@ class Account:
     equity: float
     buying_power: float
     status: str
+    last_equity: float = 0.0  # yesterday's close — drives day P&L
 
 
 @dataclass
@@ -34,6 +35,9 @@ class Position:
     market_value: float
     unrealized_pl: float
     side: str  # "long" / "short"
+    avg_entry: float = 0.0
+    current_price: float = 0.0
+    unrealized_plpc: float = 0.0  # fraction, e.g. 0.042 = +4.2%
 
 
 @dataclass
@@ -85,6 +89,20 @@ class AlpacaBroker:
             equity=float(a.equity),
             buying_power=float(a.buying_power),
             status=str(a.status),
+            last_equity=float(getattr(a, "last_equity", 0) or 0),
+        )
+
+    @staticmethod
+    def _position(p) -> Position:
+        return Position(
+            symbol=str(p.symbol),
+            qty=float(p.qty),
+            market_value=float(p.market_value),
+            unrealized_pl=float(p.unrealized_pl),
+            side=str(getattr(getattr(p, "side", "long"), "value", getattr(p, "side", "long"))),
+            avg_entry=float(getattr(p, "avg_entry_price", 0) or 0),
+            current_price=float(getattr(p, "current_price", 0) or 0),
+            unrealized_plpc=float(getattr(p, "unrealized_plpc", 0) or 0),
         )
 
     def get_position(self, symbol: str) -> Position | None:
@@ -92,13 +110,14 @@ class AlpacaBroker:
             p = self.client.get_open_position(symbol)
         except Exception:
             return None  # alpaca raises when there is no open position
-        return Position(
-            symbol=symbol,
-            qty=float(p.qty),
-            market_value=float(p.market_value),
-            unrealized_pl=float(p.unrealized_pl),
-            side=str(getattr(p, "side", "long")),
-        )
+        return self._position(p)
+
+    def list_positions(self) -> list[Position]:
+        """Every open position on the account (for the blotter)."""
+        try:
+            return [self._position(p) for p in self.client.get_all_positions()]
+        except Exception:  # noqa: BLE001
+            return []
 
     # ── the gated write ────────────────────────────────────────────────────
     def set_target_position(self, symbol: str, target: int, notional: float) -> str:
@@ -194,6 +213,23 @@ class AlpacaBroker:
             )
         responses = self.client.cancel_orders()
         return len(responses) if responses is not None else 0
+
+    def cancel_order(self, order_id: str) -> None:
+        """Cancel a single open order by id."""
+        if not self.settings.can_trade:
+            raise ReadOnlyError(
+                f"Mode is {self.settings.mode.value.upper()} — cancelling is disabled."
+            )
+        self.client.cancel_order_by_id(order_id)
+
+    def close_position(self, symbol: str) -> str:
+        """Liquidate the whole position in `symbol` at market."""
+        if not self.settings.can_trade:
+            raise ReadOnlyError(
+                f"Mode is {self.settings.mode.value.upper()} — closing positions is disabled."
+            )
+        self.client.close_position(symbol)
+        return f"closing {symbol}"
 
     # ── asset universe (for search + validation) ────────────────────────────
     def get_asset(self, symbol: str) -> dict | None:

@@ -393,6 +393,72 @@ def create_app(state: AppState):
             ],
         }
 
+    # ── blotter (all positions + open orders, with actions) ──────────────────
+    @app.get("/api/blotter")
+    def blotter():
+        if state.broker is None:
+            return {"connected": False, "canTrade": False, "account": None,
+                    "positions": [], "openOrders": []}
+        try:
+            acct = state.broker.get_account()
+            positions = state.broker.list_positions()
+            orders = state.broker.list_open_orders()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"broker read failed: {exc}")
+        day_pl = acct.equity - acct.last_equity if acct.last_equity else 0.0
+        day_pl_pct = (day_pl / acct.last_equity) if acct.last_equity else 0.0
+        return {
+            "connected": True,
+            "canTrade": state.settings.can_trade,
+            "account": {"equity": acct.equity, "cash": acct.cash,
+                        "buyingPower": acct.buying_power, "status": acct.status,
+                        "dayPl": round(day_pl, 2), "dayPlPct": round(day_pl_pct, 4)},
+            "positions": [
+                {"symbol": p.symbol, "qty": p.qty, "side": p.side,
+                 "marketValue": p.market_value, "unrealizedPl": p.unrealized_pl,
+                 "unrealizedPlpc": p.unrealized_plpc, "avgEntry": p.avg_entry,
+                 "currentPrice": p.current_price}
+                for p in positions
+            ],
+            "openOrders": [
+                {"id": o.id, "symbol": o.symbol, "side": o.side, "type": o.type,
+                 "qty": o.qty, "status": o.status}
+                for o in orders
+            ],
+        }
+
+    @app.post("/api/positions/close")
+    async def close_position(request: Request):
+        if state.broker is None:
+            raise HTTPException(status_code=403, detail="No account connected.")
+        data = await request.json()
+        sym = str(data.get("symbol", "")).strip().upper()
+        if not sym:
+            raise HTTPException(status_code=400, detail="symbol required")
+        try:
+            msg = state.broker.close_position(sym)
+        except ReadOnlyError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"close failed: {exc}")
+        return {"ok": True, "message": msg}
+
+    @app.post("/api/orders/cancel")
+    async def cancel_one_order(request: Request):
+        if state.broker is None:
+            raise HTTPException(status_code=403, detail="No account connected.")
+        data = await request.json()
+        oid = str(data.get("id", "")).strip()
+        if not oid:
+            raise HTTPException(status_code=400, detail="order id required")
+        try:
+            state.broker.cancel_order(oid)
+        except ReadOnlyError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"cancel failed: {exc}")
+        return {"ok": True}
+
     # ── orders ───────────────────────────────────────────────────────────────
     @app.post("/api/orders")
     async def submit_order(request: Request):
