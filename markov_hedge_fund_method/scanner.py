@@ -192,19 +192,32 @@ def _rationale(label, regime, days, bull5, bull20, price, ma20, ma50,
 
 
 def scan(state, symbols, *, top: int = 12) -> dict:
-    """Score every symbol and return the top-ranked opportunities."""
-    results = []
-    seen = set()
+    """Score every symbol and return the top-ranked opportunities.
+
+    Symbols are scored in parallel — each one is an independent fetch + model
+    run, so the scan takes about as long as its slowest symbol rather than the
+    sum of all of them.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    seen, ordered = set(), []
     for raw in symbols:
         sym = str(raw).strip().upper()
-        if not sym or sym in seen:
-            continue
-        seen.add(sym)
+        if sym and sym not in seen:
+            seen.add(sym)
+            ordered.append(sym)
+
+    def one(sym):
         try:
-            payload = state.state_payload(sym)
-            results.append(score_payload(payload))
+            return score_payload(state.state_payload(sym))
         except Exception:  # noqa: BLE001 — one bad symbol must not sink the scan
-            continue
+            return None
+
+    if ordered:
+        with ThreadPoolExecutor(max_workers=min(12, len(ordered))) as pool:
+            results = [r for r in pool.map(one, ordered) if r]
+    else:
+        results = []
     results.sort(key=lambda r: r["score"], reverse=True)
     return {
         "scannedAt": time.strftime("%Y-%m-%d %H:%M"),

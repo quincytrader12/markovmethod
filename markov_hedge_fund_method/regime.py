@@ -94,15 +94,25 @@ def walk_forward_backtest(
         return {"sharpe": float("nan"), "max_drawdown": float("nan"), "n_trades": 0,
                 "win_rate": float("nan"), "equity": [], "equity_index": []}
 
+    # Incremental transition counts: refitting the matrix from scratch each day
+    # is O(n^2); each step only adds ONE new transition, so carry the counts and
+    # update them. Identical results, ~n times less work.
+    lab = labels.to_numpy().astype(int)
+    rets = daily_returns.to_numpy().astype(float)
+    counts = np.zeros((3, 3), dtype=float)
+    for i in range(min_train - 1):
+        counts[lab[i], lab[i + 1]] += 1.0
+
     strategy_returns = []
     equity_dates = []
-    for t in range(min_train, len(labels) - 1):
-        P_t = build_transition_matrix(labels.iloc[:t])
-        current_state = int(labels.iloc[t])
-        signal = signal_from_matrix(P_t, current_state)
-        position = float(np.sign(signal))  # +1 / 0 / -1 — simple sign
-        next_day_return = float(daily_returns.iloc[t + 1])
-        strategy_returns.append(position * next_day_return)
+    for t in range(min_train, len(lab) - 1):
+        if t > min_train:                      # extend the window by one transition
+            counts[lab[t - 2], lab[t - 1]] += 1.0
+        row = counts[lab[t]]
+        total = row.sum()
+        signal = float((row[2] - row[0]) / total) if total else 0.0
+        position = float(np.sign(signal))      # +1 / 0 / -1 — simple sign
+        strategy_returns.append(position * float(rets[t + 1]))
         equity_dates.append(labels.index[t + 1])
 
     sr = np.array(strategy_returns, dtype=float)
@@ -146,11 +156,19 @@ def regime_performance(close: pd.Series, labels: pd.Series, min_train: int = 252
 
     buckets: dict[int, list[float]] = {0: [], 1: [], 2: []}
     if len(labels) >= min_train + 30:
-        for t in range(min_train, len(labels) - 1):
-            P_t = build_transition_matrix(labels.iloc[:t])
-            state = int(labels.iloc[t])
-            position = float(np.sign(signal_from_matrix(P_t, state)))
-            buckets[state].append(position * float(daily_returns.iloc[t + 1]))
+        lab = labels.to_numpy().astype(int)
+        rets = daily_returns.to_numpy().astype(float)
+        counts = np.zeros((3, 3), dtype=float)      # incremental — see backtest
+        for i in range(min_train - 1):
+            counts[lab[i], lab[i + 1]] += 1.0
+        for t in range(min_train, len(lab) - 1):
+            if t > min_train:
+                counts[lab[t - 2], lab[t - 1]] += 1.0
+            state = int(lab[t])
+            row = counts[state]
+            total = row.sum()
+            signal = float((row[2] - row[0]) / total) if total else 0.0
+            buckets[state].append(float(np.sign(signal)) * float(rets[t + 1]))
 
     out = {}
     for state, name in _REGIME_NAMES.items():

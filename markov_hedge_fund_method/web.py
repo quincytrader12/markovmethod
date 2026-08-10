@@ -244,6 +244,7 @@ class AppState:
 
 _ORDER_FIELDS = {
     "symbol", "side", "order_type", "time_in_force", "order_class", "qty", "notional",
+    "lots", "lot_size",
     "limit_price", "stop_price", "trail_price", "trail_percent",
     "take_profit_limit", "stop_loss_stop", "stop_loss_limit", "extended_hours",
 }
@@ -496,6 +497,35 @@ def create_app(state: AppState):
                         threshold=state.settings.threshold)
         q["name"] = state.name_for(symbol)
         return q
+
+    @app.get("/api/quotes")
+    def quotes(symbols: str = ""):
+        """Batch watchlist quotes, fetched in parallel — one round-trip for the
+        whole watchlist instead of one request (and one download) per symbol."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        syms = [s.strip().upper() for s in symbols.split(",") if s.strip()][:32]
+        if not syms:
+            return {"quotes": []}
+
+        def one(sym):
+            cached = state._state_cache.get(sym)
+            if cached and (time.monotonic() - cached[0]) < state.ttl:
+                p = cached[1]
+                return {"ticker": sym, "lastPrice": p["lastPrice"], "regime": p["regime"],
+                        "name": p.get("name", "")}
+            try:
+                close, _ = state.close_for(sym)
+                q = quote_state(close, sym, window=state.settings.window,
+                                threshold=state.settings.threshold)
+                q["name"] = state.name_for(sym)
+                return q
+            except Exception:  # noqa: BLE001 — a bad symbol must not sink the batch
+                return None
+
+        with ThreadPoolExecutor(max_workers=min(8, len(syms))) as pool:
+            results = [q for q in pool.map(one, syms) if q]
+        return {"quotes": results}
 
     @app.get("/api/news")
     def news(symbol: str = "SPY"):

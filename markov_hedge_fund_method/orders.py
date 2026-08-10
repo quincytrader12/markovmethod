@@ -28,6 +28,11 @@ ORDER_CLASSES = ("simple", "bracket", "oco", "oto")
 TIFS = ("day", "gtc", "opg", "cls", "ioc", "fok")
 SIDES = ("buy", "sell")
 
+# A "lot" is a fixed block of shares — 100 for US equities by convention. The
+# panel can size in lots instead of shares; the ticket converts lots -> qty so
+# everything downstream still speaks Alpaca's share-based API.
+DEFAULT_LOT_SIZE = 100
+
 
 class OrderValidationError(ValueError):
     """A ticket that cannot become a valid Alpaca order (shown to the user)."""
@@ -43,6 +48,8 @@ class OrderTicket:
     time_in_force: str = "day"             # see TIFS
     order_class: str = "simple"            # see ORDER_CLASSES
     qty: float | None = None               # shares (fractional allowed)
+    lots: float | None = None              # size in lots; qty = lots * lot_size
+    lot_size: int = DEFAULT_LOT_SIZE       # shares per lot (US equities: 100)
     notional: float | None = None          # dollars (market + day + simple only)
     limit_price: float | None = None       # limit / stop_limit
     stop_price: float | None = None        # stop / stop_limit
@@ -55,13 +62,25 @@ class OrderTicket:
     client_order_id: str | None = None
 
     def normalized(self) -> "OrderTicket":
+        # Sizing in lots is just a share multiple — resolve it to qty here so
+        # validation and request building only ever deal with shares.
+        lot_size = int(DEFAULT_LOT_SIZE if self.lot_size is None else self.lot_size)
+        if lot_size <= 0:
+            raise OrderValidationError("Lot size must be a positive number of shares.")
+        qty = self.qty
+        if self.lots is not None:
+            if float(self.lots) <= 0:
+                raise OrderValidationError("Lots must be greater than zero.")
+            qty = float(self.lots) * lot_size
         return OrderTicket(
             symbol=(self.symbol or "").strip().upper(),
             side=(self.side or "").strip().lower(),
             order_type=(self.order_type or "").strip().lower(),
             time_in_force=(self.time_in_force or "").strip().lower(),
             order_class=(self.order_class or "").strip().lower(),
-            qty=self.qty,
+            qty=qty,
+            lots=self.lots,
+            lot_size=lot_size,
             notional=self.notional,
             limit_price=self.limit_price,
             stop_price=self.stop_price,
@@ -246,7 +265,12 @@ def build_order_request(ticket: OrderTicket):
 def describe(ticket: OrderTicket) -> str:
     """Short, human-readable one-liner for the confirmation log."""
     t = ticket.normalized()
-    size = f"{t.qty:g} sh" if t.qty is not None else f"${t.notional:,.2f}"
+    if t.lots is not None:
+        size = f"{t.lots:g} lot{'s' if t.lots != 1 else ''} ({t.qty:g} sh)"
+    elif t.qty is not None:
+        size = f"{t.qty:g} sh"
+    else:
+        size = f"${t.notional:,.2f}"
     parts = [t.side.upper(), size, t.symbol, t.order_type.replace("_", "-")]
     if t.order_type in ("limit", "stop_limit") and t.limit_price:
         parts.append(f"lmt {t.limit_price:g}")

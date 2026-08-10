@@ -439,6 +439,8 @@
           <span class="price" id="c-price">—</span>
           <span class="sig" id="c-sig"></span>
           <span class="tfbar" id="tfbar">
+            <button data-tf="1H" title="intraday · 1-hour candles">1H</button>
+            <button data-tf="4H" title="intraday · 4-hour candles">4H</button>
             <button data-tf="1D" title="intraday · 5-min candles">1D</button>
             <button data-tf="1W" title="1 week · 30-min candles">1W</button>
             <button data-tf="21">1M</button><button data-tf="63">3M</button>
@@ -505,6 +507,10 @@
             <option value="oco">oco</option><option value="oto">oto</option></select></label>
           <label class="fld">Qty<input id="o-qty" type="number" step="any" placeholder="shares"></label>
           <label class="fld">Notional $<input id="o-notional" type="number" step="any" placeholder="market/day"></label>
+          <label class="fld">Lots<input id="o-lots" type="number" step="any" placeholder="e.g. 2"
+                 title="size in lots — qty = lots × lot size"></label>
+          <label class="fld">Lot size<input id="o-lotsize" type="number" step="1" value="100"
+                 title="shares per lot (US equities: 100)"></label>
           <label class="fld" data-need="limit">Limit<input id="o-limit" type="number" step="any"></label>
           <label class="fld" data-need="stop">Stop<input id="o-stop" type="number" step="any"></label>
           <label class="fld" data-need="trail">Trail $<input id="o-trailp" type="number" step="any"></label>
@@ -611,15 +617,17 @@ function buildWatchlist(syms){
   markActive(SYMBOL); refreshWatchlist(syms);
 }
 async function refreshWatchlist(syms){
-  for(const s of syms){
-    try{
-      const q = await api('/api/quote?symbol='+encodeURIComponent(s));   // cheap: price+regime only
-      const it = document.querySelector(`.wl .item[data-sym="${s}"]`); if(!it) continue;
+  if(!syms || !syms.length) return;
+  // one batched round-trip; the server fetches the symbols in parallel
+  try{
+    const d = await api('/api/quotes?symbols='+encodeURIComponent(syms.join(',')));
+    for(const q of (d.quotes||[])){
+      const it = document.querySelector(`.wl .item[data-sym="${q.ticker}"]`); if(!it) continue;
       const chip = it.querySelector('[data-r]'); chip.textContent = q.regime; chip.className = 'rchip r-'+q.regime;
       it.querySelector('[data-px]').textContent = fmt(q.lastPrice);
-      it.title = q.name ? `${s} — ${q.name}` : s;
-    }catch(e){ /* ignore per-symbol */ }
-  }
+      it.title = q.name ? `${q.ticker} — ${q.name}` : q.ticker;
+    }
+  }catch(e){ /* leave placeholders on failure */ }
 }
 async function refreshQuote(s){ return refreshWatchlist([s]); }
 function ensureWatchlist(s){
@@ -742,7 +750,9 @@ function renderAfford(){
   let h = `<span>${sym} <b>$${fmt(px)}</b></span>`;
   if(BP!=null){
     const max=Math.floor(BP/px);
-    h += `<span>buying power <b>$${fmt(BP)}</b></span><span>max ≈ <b>${max}</b> sh</span>`;
+    const ls=Number(($('o-lotsize')||{}).value)||100;
+    h += `<span>buying power <b>$${fmt(BP)}</b></span><span>max ≈ <b>${max}</b> sh`+
+         ` · <b>${Math.floor(max/ls)}</b> lot${Math.floor(max/ls)===1?'':'s'}</span>`;
   } else {
     h += `<span class="muted">connect an account to see buying power</span>`;
   }
@@ -963,7 +973,8 @@ async function submitOrder(){
     order_type:$('o-type').value, time_in_force:$('o-tif').value, order_class:$('o-class').value,
     qty:numOrNull('o-qty'), notional:numOrNull('o-notional'), limit_price:numOrNull('o-limit'),
     stop_price:numOrNull('o-stop'), trail_price:numOrNull('o-trailp'), trail_percent:numOrNull('o-trailpct'),
-    take_profit_limit:numOrNull('o-tp'), stop_loss_stop:numOrNull('o-slstop') };
+    take_profit_limit:numOrNull('o-tp'), stop_loss_stop:numOrNull('o-slstop'),
+    lots:numOrNull('o-lots'), lot_size:(numOrNull('o-lotsize')||100) };
   try{
     const r=await api('/api/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     log(`order sent ${r.summary} → <b>${r.id}</b> [${r.status}]`,'ok'); loadPortfolio();
@@ -1030,7 +1041,7 @@ async function removeAccount(name){
 
 /* ---------- wiring ---------- */
 /* ---------- opportunity scanner ---------- */
-let SCAN_U='market';
+let SCAN_U='market', LAST_SCAN={results:[]};
 function openScanner(){ $('scan-modal').classList.add('open'); runScan(); }
 function closeScanner(){ $('scan-modal').classList.remove('open'); }
 function setScanUniverse(u){
@@ -1050,6 +1061,7 @@ async function runScan(){
   }catch(e){ list.innerHTML='<div class="scan-loading">scan failed: '+esc(e.message)+'</div>'; }
 }
 function renderScan(d){
+  LAST_SCAN=d;
   const list=$('scan-list');
   if(!d.results || !d.results.length){ list.innerHTML='<div class="scan-loading">no results</div>'; return; }
   list.innerHTML = d.results.map((r,i)=>{
@@ -1072,13 +1084,29 @@ function renderScan(d){
         <span>SHARPE <b>${sh}</b></span>
         <span>WIN <b>${wr}</b></span>
         <span>PRICE <b>$${r.lastPrice}</b></span>
-        <span class="scan-actions"><button onclick="loadFromScan('${esc(r.symbol)}')">LOAD →</button></span>
+        <span class="scan-actions">
+          <button onclick="watchFromScan('${esc(r.symbol)}', this)">+ WATCH</button>
+          <button onclick="loadFromScan('${esc(r.symbol)}')">LOAD →</button>
+        </span>
       </div>
     </div>`;
   }).join('');
   $('scan-foot').textContent = `Scanned ${d.scanned} symbols · ${d.scannedAt} · ${d.disclaimer}`;
 }
 function loadFromScan(s){ closeScanner(); selectSymbol(s, true); }
+function watchFromScan(s, btn){
+  if(currentWatch().includes(s)){ if(btn){ btn.textContent='✓ ON LIST'; btn.disabled=true; } return; }
+  ensureWatchlist(s);                       // adds the row + refreshes its quote
+  log(s+' added to watchlist','ok');
+  if(btn){ btn.textContent='✓ ADDED'; btn.disabled=true; }
+}
+function addAllTopPicks(){
+  const picks=(LAST_SCAN.results||[]).filter(r=>r.verdict==='Strong Buy'||r.verdict==='Buy');
+  let n=0;
+  for(const r of picks){ if(!currentWatch().includes(r.symbol)){ ensureWatchlist(r.symbol); n++; } }
+  log(n?`added ${n} pick(s) to the watchlist`:'all picks already on the watchlist', n?'ok':'dim');
+  renderScan(LAST_SCAN);
+}
 
 /* ---------- trading blotter ---------- */
 function openBlotter(){ $('blot-modal').classList.add('open'); loadBlotter(); }
@@ -1430,6 +1458,8 @@ boot();
         <button data-u="watchlist" onclick="setScanUniverse('watchlist')">Watchlist</button>
       </div>
       <button class="btn-x" onclick="runScan()">⟳ Rescan</button>
+      <button class="btn-x" onclick="addAllTopPicks()"
+              title="Add every Buy / Strong Buy to the watchlist">+ Add all picks</button>
       <div class="spacer"></div>
       <button class="btn-x" onclick="closeScanner()">✕ Close</button>
     </div>

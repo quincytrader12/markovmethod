@@ -121,10 +121,25 @@ def get_ohlc(settings) -> pd.DataFrame:
 
 
 # ── intraday (for the 1D / 1W timeframes) ────────────────────────────────────
+# Intraday timeframes: bar count + pandas frequency for the synthetic series,
+# yfinance (period, interval), and the Alpaca (minutes, lookback-days) pair.
+_INTRADAY_TF = {
+    "1H": {"n": 120, "freq": "1h", "yf": ("1mo", "1h"), "alpaca": (60, 30)},
+    "4H": {"n": 120, "freq": "4h", "yf": ("3mo", "1h"), "alpaca": (240, 120)},
+    "1D": {"n": 78, "freq": "5min", "yf": ("1d", "5m"), "alpaca": (5, 4)},
+    "1W": {"n": 130, "freq": "30min", "yf": ("5d", "30m"), "alpaca": (30, 8)},
+}
+
+
+def _tf_spec(tf: str) -> dict:
+    return _INTRADAY_TF.get((tf or "1D").upper(), _INTRADAY_TF["1D"])
+
+
 def synthetic_intraday(tf: str = "1D", seed: int = 0) -> pd.DataFrame:
-    """Deterministic intraday OHLC so the 1D / 1W views render fully offline."""
+    """Deterministic intraday OHLC so the intraday views render fully offline."""
     tf = tf.upper()
-    n, freq = (78, "5min") if tf == "1D" else (130, "30min")
+    spec = _tf_spec(tf)
+    n, freq = spec["n"], spec["freq"]
     rng = np.random.default_rng(seed + 7)
     idx = pd.date_range(end=pd.Timestamp.now().floor("min"), periods=n, freq=freq)
     rets = rng.normal(0.0001, 0.0035, n)
@@ -140,20 +155,23 @@ def synthetic_intraday(tf: str = "1D", seed: int = 0) -> pd.DataFrame:
 def _yfinance_intraday(ticker: str, tf: str) -> pd.DataFrame:
     import yfinance as yf
 
-    period, interval = ("1d", "5m") if tf.upper() == "1D" else ("5d", "30m")
+    tf = (tf or "1D").upper()
+    period, interval = _tf_spec(tf)["yf"]
     df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False)
-    return _ohlc_columns(df)
+    df = _ohlc_columns(df)
+    if tf == "4H" and not df.empty:      # yfinance has no 4h bar — resample 1h
+        df = df.resample("4h").agg({"Open": "first", "High": "max",
+                                    "Low": "min", "Close": "last"}).dropna()
+    return df
 
 
 def _alpaca_intraday(ticker: str, tf: str, api_key: str, api_secret: str) -> pd.DataFrame:
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-    tf = tf.upper()
-    if tf == "1D":
-        frame, back = TimeFrame(5, TimeFrameUnit.Minute), pd.Timedelta(days=4)
-    else:
-        frame, back = TimeFrame(30, TimeFrameUnit.Minute), pd.Timedelta(days=8)
-    start = (pd.Timestamp.now(tz="UTC") - back).to_pydatetime()
+    tf = (tf or "1D").upper()
+    minutes, days_back = _tf_spec(tf)["alpaca"]
+    frame = TimeFrame(minutes, TimeFrameUnit.Minute)
+    start = (pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days_back)).to_pydatetime()
 
     if "/" in ticker or (ticker.endswith("USD") and "-" in ticker):
         from alpaca.data.historical import CryptoHistoricalDataClient
@@ -182,7 +200,7 @@ def _alpaca_intraday(ticker: str, tf: str, api_key: str, api_secret: str) -> pd.
 
 
 def get_intraday_ohlc(settings, tf: str) -> pd.DataFrame:
-    """Intraday OHLC (5-min for 1D, 30-min for 1W) — Alpaca if keys, else yfinance."""
+    """Intraday OHLC (1H/4H/5-min for 1D/30-min for 1W) — Alpaca if keys, else yfinance."""
     if settings.has_credentials:
         return _alpaca_intraday(settings.ticker, tf, settings.api_key, settings.api_secret)
     return _yfinance_intraday(settings.ticker, tf)
