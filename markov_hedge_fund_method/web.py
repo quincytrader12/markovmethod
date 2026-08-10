@@ -64,11 +64,32 @@ SYMBOL_UNIVERSE = sorted(set(DEFAULT_SYMBOLS + [
 
 # A liquid subset the opportunity scanner sweeps by default. Kept modest so a
 # scan stays responsive (each symbol runs the full regime + walk-forward brain).
-SCAN_UNIVERSE = [
-    "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD",
-    "AVGO", "NFLX", "COST", "JPM", "V", "UNH", "LLY", "XOM", "HD", "WMT",
-    "PLTR", "COIN", "CRWD", "BTC-USD",
-]
+# Hunting grounds for the opportunity scanner. "market" is deliberately wide and
+# not just mega-caps — the obvious names are already picked over, so the mid-cap
+# and thematic groups are where a regime flip is more likely to be early.
+SCAN_GROUPS = {
+    "megacap": [
+        "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "NFLX",
+        "COST", "JPM", "V", "UNH", "LLY", "XOM", "HD", "WMT", "PG", "MA", "ORCL",
+    ],
+    "midcap": [
+        "PLTR", "COIN", "CRWD", "SNOW", "DDOG", "NET", "ZS", "PANW", "MDB", "TEAM",
+        "HOOD", "SOFI", "AFRM", "TOST", "RBLX", "DKNG", "ABNB", "UBER", "LYFT", "SHOP",
+        "SQ", "TTD", "ROKU", "PINS", "SNAP", "U", "PATH", "S", "OKTA", "TWLO",
+        "ETSY", "CHWY", "CVNA", "W", "WBD", "F", "GM", "RIVN", "LCID", "PLUG",
+        "ENPH", "FSLR", "RUN", "CHPT", "AI", "IONQ", "RKLB", "ASTS", "SMCI", "ARM",
+    ],
+    "sector": [
+        "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE",
+        "SMH", "IBB", "XBI", "ITB", "XRT", "XOP", "JETS", "KRE", "GDX", "URA",
+        "ARKK", "IWM", "DIA", "SPY", "QQQ", "EEM", "EFA", "TLT", "HYG", "GLD",
+    ],
+    "crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD"],
+}
+
+# The default sweep: everything except crypto — ~100 names, wide enough that the
+# picks are not just the same ten mega-caps every day.
+SCAN_UNIVERSE = (SCAN_GROUPS["megacap"] + SCAN_GROUPS["midcap"] + SCAN_GROUPS["sector"])
 
 
 # Full names for the bundled universe (tooltips). When connected to Alpaca the
@@ -135,6 +156,7 @@ class AppState:
         self.broker = None if demo else make_broker(settings)
         self._state_cache: dict[str, tuple[float, dict]] = {}
         self._regperf_cache: dict[str, tuple[float, dict]] = {}
+        self._scan_cache: dict[str, tuple[float, list]] = {}
         self._news_cache: dict[str, tuple[float, list]] = {}
         self._alpaca_symbols: set[str] | None = None
         self._alpaca_names: dict[str, str] = {}
@@ -143,6 +165,8 @@ class AppState:
     def reconnect(self) -> None:
         self.broker = None if self.demo else make_broker(self.settings)
         self._state_cache.clear()   # a new account may change the data source
+        self._scan_cache.clear()
+        self._regperf_cache.clear()
         self._alpaca_symbols = None  # and a different asset universe
         self._alpaca_names = {}
 
@@ -219,6 +243,32 @@ class AppState:
         payload["name"] = self.name_for(symbol)
         self._state_cache[symbol] = (time.monotonic(), payload)
         return payload
+
+    # Scored-universe cache. Regimes move on a daily scale, so a few minutes of
+    # staleness is harmless — and it makes every rescan/filter change instant.
+    SCAN_TTL = 300.0
+
+    def scored_universe(self, scope: str, symbols: list) -> list:
+        """Scored list for a scan scope, memoised so filters/rescans are free."""
+        from .scanner import score_symbols
+        cached = self._scan_cache.get(scope)
+        if cached and (time.monotonic() - cached[0]) < self.SCAN_TTL:
+            return cached[1]
+        results = score_symbols(self, symbols)
+        self._scan_cache[scope] = (time.monotonic(), results)
+        return results
+
+    def prewarm(self, scope: str, symbols: list) -> None:
+        """Warm the scan cache in the background so the first scan is instant."""
+        import threading
+
+        def work():
+            try:
+                self.scored_universe(scope, symbols)
+            except Exception:  # noqa: BLE001 — a warm-up must never break startup
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
 
     def regime_perf_for(self, symbol: str) -> dict:
         """Model's walk-forward performance bucketed by regime (cached)."""
@@ -357,17 +407,26 @@ def create_app(state: AppState):
                 "rsi": ser(rsi), "momentum": ser(mom), "source": source}
 
     @app.get("/api/scan")
-    def scan_endpoint(symbols: str = "", top: int = 12, universe: str = ""):
-        from .scanner import scan
+    def scan_endpoint(symbols: str = "", top: int = 20, universe: str = "",
+                      fresh: int = 0, proven: bool = False, sort: str = "score",
+                      watchlist: str = ""):
+        from .scanner import rank
+        scope = (universe or "").strip().lower() or "market"
         if symbols.strip():
             syms = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-            scope = "custom"
-        elif universe.strip().lower() == "watchlist":
-            syms, scope = DEFAULT_SYMBOLS, "watchlist"
+            scope, key = "custom", "custom:" + ",".join(sorted(syms))
+        elif scope == "watchlist":
+            syms = [s.strip().upper() for s in watchlist.split(",") if s.strip()] or DEFAULT_SYMBOLS
+            key = "watchlist:" + ",".join(sorted(syms))
+        elif scope in SCAN_GROUPS:
+            syms, key = SCAN_GROUPS[scope], scope
         else:
-            syms, scope = SCAN_UNIVERSE, "market"
-        result = scan(state, syms, top=top)
+            syms, scope, key = SCAN_UNIVERSE, "market", "market"
+        # Scoring is cached per-universe, so filters and rescans are instant.
+        result = rank(state.scored_universe(key, syms), top=top,
+                      fresh_days=max(0, int(fresh)), proven_only=bool(proven), sort=sort)
         result["universe"] = scope
+        result["universeSize"] = len(syms)
         return result
 
     @app.get("/api/regime-performance")
@@ -791,6 +850,10 @@ def main() -> int:
             return 1
         print("mamba-web selftest OK — FastAPI app built, HUD asset present.")
         return 0
+
+    # Score the scan universe in the background while the user is reading the
+    # dashboard, so their first ⚡ SCAN comes back instantly.
+    state.prewarm("market", SCAN_UNIVERSE)
 
     url = f"http://{args.host}:{args.port}/"
     print(f"Mamba Terminal web HUD → {url}  (Ctrl-C to stop)")

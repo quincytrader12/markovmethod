@@ -99,6 +99,20 @@
   .scan-actions button:hover{background:var(--cyan); color:#00121a}
   .scan-foot{padding:8px 15px; border-top:1px solid var(--edge); color:var(--dim); font-size:9.5px; line-height:1.4; flex:0 0 auto}
   .scan-loading{padding:30px; text-align:center; color:var(--cyan); letter-spacing:1px}
+  .scan-filters{display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:8px 15px;
+    border-bottom:1px solid var(--edge); flex:0 0 auto; background:#06101a}
+  .scan-filters .spacer{flex:1}
+  .fchk{display:flex; align-items:center; gap:5px; color:var(--dim); font-size:10.5px;
+    letter-spacing:.5px; cursor:pointer; white-space:nowrap}
+  .fchk input{accent-color:var(--cyan); cursor:pointer}
+  .fchk:hover span{color:var(--cyan2)}
+  .scan-filters > *{flex:0 0 auto}
+  .scan-filters .seg-sel{width:auto; min-width:118px; max-width:170px; font-size:11px; padding:4px 6px}
+  .scan-custom{background:#08121c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
+    padding:4px 8px; font-family:inherit; font-size:11px; flex:1 1 190px; min-width:150px}
+  .scan-custom:focus{outline:none; border-color:var(--cyan)}
+  .fresh-pill{background:rgba(0,255,140,.15); color:var(--green); border:1px solid var(--green);
+    border-radius:9px; padding:1px 7px; font-size:9px; letter-spacing:.5px; font-weight:700}
 
   /* trading blotter */
   .blot-acct{display:flex; gap:20px; flex-wrap:wrap; padding:11px 16px; border-bottom:1px solid var(--edge); flex:0 0 auto}
@@ -1044,40 +1058,72 @@ async function removeAccount(name){
 let SCAN_U='market', LAST_SCAN={results:[]};
 function openScanner(){ $('scan-modal').classList.add('open'); runScan(); }
 function closeScanner(){ $('scan-modal').classList.remove('open'); }
+let SCAN_CUSTOM='';
+const SCAN_LABEL={market:'the whole market', midcap:'mid caps & growth', sector:'sectors & themes',
+                  megacap:'mega caps', crypto:'crypto', watchlist:'your watchlist', custom:'your tickers'};
 function setScanUniverse(u){
-  SCAN_U=u;
+  SCAN_U=u; SCAN_CUSTOM='';
   document.querySelectorAll('#scan-seg button').forEach(b=>b.classList.toggle('on', b.dataset.u===u));
   runScan();
 }
 function vClass(v){ return v==='Strong Buy'?'strong': v==='Buy'?'buy': v==='Watch'?'watch':'avoid'; }
-async function runScan(){
+function scanQuery(){
+  const fresh=$('f-fresh').checked ? $('f-freshdays').value : 0;
+  const p=new URLSearchParams({top:'25', fresh:String(fresh), sort:$('f-sort').value});
+  if($('f-proven').checked) p.set('proven','true');
+  if(SCAN_CUSTOM){ p.set('symbols', SCAN_CUSTOM); }
+  else{
+    p.set('universe', SCAN_U);
+    if(SCAN_U==='watchlist') p.set('watchlist', currentWatch().join(','));
+  }
+  return p.toString();
+}
+function runCustomScan(){
+  const raw=$('f-custom').value.trim();
+  if(!raw){ log('type some tickers first, e.g. TSM, ASML, NU','warn'); return; }
+  SCAN_CUSTOM=raw.split(/[\s,]+/).filter(Boolean).join(',');
+  document.querySelectorAll('#scan-seg button').forEach(b=>b.classList.remove('on'));
+  runScan();
+}
+function applyScanFilters(){ runScan(); }   // filters are server-side but cache-backed → instant
+async function runScan(force){
   const list=$('scan-list');
-  list.innerHTML='<div class="scan-loading">Scanning '+(SCAN_U==='watchlist'?'your watchlist':'the market')+
+  const where = SCAN_CUSTOM ? SCAN_LABEL.custom : (SCAN_LABEL[SCAN_U]||'the market');
+  list.innerHTML='<div class="scan-loading">Scanning '+esc(where)+
     ' — running the regime engine on each name…</div>';
   $('scan-foot').textContent='';
   try{
-    const d=await api('/api/scan?top=15&universe='+SCAN_U);
+    const d=await api('/api/scan?'+scanQuery()+(force?'&_='+Date.now():''));
     renderScan(d);
   }catch(e){ list.innerHTML='<div class="scan-loading">scan failed: '+esc(e.message)+'</div>'; }
 }
 function renderScan(d){
   LAST_SCAN=d;
   const list=$('scan-list');
-  if(!d.results || !d.results.length){ list.innerHTML='<div class="scan-loading">no results</div>'; return; }
+  if(!d.results || !d.results.length){
+    list.innerHTML='<div class="scan-loading">No names match these filters — '+
+      'try widening the days, unticking a filter, or a different universe.</div>';
+    $('scan-foot').textContent = `Scanned ${d.scanned} symbols · 0 matched · ${d.disclaimer}`;
+    return;
+  }
   list.innerHTML = d.results.map((r,i)=>{
     const c=vClass(r.verdict);
     const sh=(r.sharpe==null?'—':r.sharpe), wr=(r.winRate==null?'—':Math.round(r.winRate*100)+'%');
+    const fresh = r.daysInRegime>0 && r.daysInRegime<=5
+      ? `<span class="fresh-pill" title="just flipped regime — an early entry">🌱 ${r.daysInRegime}d NEW</span>` : '';
     return `<div class="scan-card ${c}">
       <div class="scan-top">
         <span class="scan-sym">#${i+1} ${esc(r.symbol)}</span>
         <span class="scan-name">${esc(r.name)}</span>
         <span class="spacer"></span>
+        ${fresh}
         <span class="badge ${c}">${esc(r.verdict)}</span>
         <span class="scan-score" title="composite 0-100">${r.score}</span>
       </div>
       <div class="scan-why">${esc(r.rationale)}</div>
       <div class="scan-meta">
         <span>REGIME <b>${esc(r.regime)}</b></span>
+        <span title="days into the current regime — lower = earlier">AGE <b>${r.daysInRegime}d</b></span>
         <span>BULL 5d <b>${r.forecastBull}%</b></span>
         <span>RSI <b>${r.rsi}</b></span>
         <span>MOM <b>${r.momentum}%</b></span>
@@ -1091,7 +1137,12 @@ function renderScan(d){
       </div>
     </div>`;
   }).join('');
-  $('scan-foot').textContent = `Scanned ${d.scanned} symbols · ${d.scannedAt} · ${d.disclaimer}`;
+  const filt=[];
+  if(d.freshDays) filt.push(`fresh ≤${d.freshDays}d`);
+  if(d.provenOnly) filt.push('proven edge');
+  const fs = filt.length?` · filters: ${filt.join(' + ')}`:'';
+  $('scan-foot').textContent =
+    `Scanned ${d.scanned} symbols · ${d.matched} matched · showing ${d.results.length}${fs} · ${d.scannedAt} · ${d.disclaimer}`;
 }
 function loadFromScan(s){ closeScanner(); selectSymbol(s, true); }
 function watchFromScan(s, btn){
@@ -1454,14 +1505,40 @@ boot();
     <div class="modal-head">
       <h3>⚡ Opportunity Scanner</h3>
       <div class="seg" id="scan-seg">
-        <button data-u="market" class="on" onclick="setScanUniverse('market')">Market</button>
+        <button data-u="market" class="on" onclick="setScanUniverse('market')"
+                title="All ~100 names — mega caps, mid caps and sector ETFs">Market</button>
+        <button data-u="midcap" onclick="setScanUniverse('midcap')"
+                title="Mid caps &amp; growth — where a flip is more likely to be early">Mid / Growth</button>
+        <button data-u="sector" onclick="setScanUniverse('sector')"
+                title="Sector &amp; theme ETFs — find which part of the market is turning">Sectors</button>
+        <button data-u="megacap" onclick="setScanUniverse('megacap')">Mega</button>
+        <button data-u="crypto" onclick="setScanUniverse('crypto')">Crypto</button>
         <button data-u="watchlist" onclick="setScanUniverse('watchlist')">Watchlist</button>
       </div>
-      <button class="btn-x" onclick="runScan()">⟳ Rescan</button>
-      <button class="btn-x" onclick="addAllTopPicks()"
-              title="Add every Buy / Strong Buy to the watchlist">+ Add all picks</button>
       <div class="spacer"></div>
       <button class="btn-x" onclick="closeScanner()">✕ Close</button>
+    </div>
+    <div class="scan-filters">
+      <label class="fchk"><input type="checkbox" id="f-fresh" onchange="applyScanFilters()">
+        <span title="Only names that just changed regime — the earliest entries">🌱 Fresh flips only</span></label>
+      <select class="seg-sel" id="f-freshdays" onchange="applyScanFilters()" title="How new the regime must be">
+        <option value="3">≤ 3 days</option>
+        <option value="5" selected>≤ 5 days</option>
+        <option value="10">≤ 10 days</option>
+      </select>
+      <label class="fchk"><input type="checkbox" id="f-proven" onchange="applyScanFilters()">
+        <span title="Only names where this strategy has a real track record (Sharpe &gt; 0 and win rate &gt; 50%)">✓ Proven edge only</span></label>
+      <select class="seg-sel" id="f-sort" onchange="applyScanFilters()">
+        <option value="score">Sort: best score</option>
+        <option value="fresh">Sort: freshest flip</option>
+      </select>
+      <input id="f-custom" class="scan-custom" placeholder="or paste your own tickers: TSM, ASML, NU…"
+             onkeydown="if(event.key==='Enter')runCustomScan()">
+      <button class="btn-x" onclick="runCustomScan()">Scan these</button>
+      <div class="spacer"></div>
+      <button class="btn-x" onclick="runScan(true)" title="Re-score from fresh data">⟳ Rescan</button>
+      <button class="btn-x" onclick="addAllTopPicks()"
+              title="Add every Buy / Strong Buy to the watchlist">+ Add all picks</button>
     </div>
     <div class="scan-list" id="scan-list"></div>
     <div class="scan-foot" id="scan-foot"></div>

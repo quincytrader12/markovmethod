@@ -191,12 +191,11 @@ def _rationale(label, regime, days, bull5, bull20, price, ma20, ma50,
     return " ".join(parts)
 
 
-def scan(state, symbols, *, top: int = 12) -> dict:
-    """Score every symbol and return the top-ranked opportunities.
+def score_symbols(state, symbols) -> list[dict]:
+    """Score every symbol in parallel and return the full unfiltered list.
 
-    Symbols are scored in parallel — each one is an independent fetch + model
-    run, so the scan takes about as long as its slowest symbol rather than the
-    sum of all of them.
+    This is the only expensive step, so callers cache its result and apply
+    filters/sorting on top — changing a filter then costs nothing.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -206,6 +205,8 @@ def scan(state, symbols, *, top: int = 12) -> dict:
         if sym and sym not in seen:
             seen.add(sym)
             ordered.append(sym)
+    if not ordered:
+        return []
 
     def one(sym):
         try:
@@ -213,15 +214,49 @@ def scan(state, symbols, *, top: int = 12) -> dict:
         except Exception:  # noqa: BLE001 — one bad symbol must not sink the scan
             return None
 
-    if ordered:
-        with ThreadPoolExecutor(max_workers=min(12, len(ordered))) as pool:
-            results = [r for r in pool.map(one, ordered) if r]
+    with ThreadPoolExecutor(max_workers=min(16, len(ordered))) as pool:
+        return [r for r in pool.map(one, ordered) if r]
+
+
+def rank(results: list[dict], *, top: int = 20, fresh_days: int = 0,
+         proven_only: bool = False, sort: str = "score") -> dict:
+    """Filter + sort already-scored results. Pure and instant.
+
+    Filters that make "early" findable:
+      fresh_days  > 0     keep only names this many days (or fewer) into their
+                          current regime — i.e. moves that just turned.
+      proven_only         keep only names where the strategy has a real track
+                          record (positive Sharpe and a win rate above 50%).
+      sort                "score" (default) or "fresh" (newest regime first,
+                          score breaking ties).
+    """
+    scanned = len(results)
+    out = list(results)
+    if fresh_days and fresh_days > 0:
+        out = [r for r in out if 0 < r.get("daysInRegime", 0) <= fresh_days]
+    if proven_only:
+        out = [r for r in out
+               if (r.get("sharpe") or 0) > 0 and (r.get("winRate") or 0) > 0.5]
+
+    if sort == "fresh":
+        out.sort(key=lambda r: (r.get("daysInRegime", 9999), -r["score"]))
     else:
-        results = []
-    results.sort(key=lambda r: r["score"], reverse=True)
+        out.sort(key=lambda r: r["score"], reverse=True)
+
     return {
         "scannedAt": time.strftime("%Y-%m-%d %H:%M"),
-        "scanned": len(results),
-        "results": results[: max(1, int(top))],
+        "scanned": scanned,
+        "matched": len(out),
+        "sort": sort,
+        "freshDays": fresh_days,
+        "provenOnly": bool(proven_only),
+        "results": out[: max(1, int(top))],
         "disclaimer": DISCLAIMER,
     }
+
+
+def scan(state, symbols, *, top: int = 12, fresh_days: int = 0,
+         proven_only: bool = False, sort: str = "score") -> dict:
+    """Score a universe then rank it (score + filter in one call)."""
+    return rank(score_symbols(state, symbols), top=top, fresh_days=fresh_days,
+                proven_only=proven_only, sort=sort)
