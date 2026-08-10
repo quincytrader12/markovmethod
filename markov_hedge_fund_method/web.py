@@ -160,6 +160,10 @@ class AppState:
         self._news_cache: dict[str, tuple[float, list]] = {}
         self._alpaca_symbols: set[str] | None = None
         self._alpaca_names: dict[str, str] = {}
+        self._alpaca_sorted: list[str] = []
+        self._alpaca_index: dict[str, list[str]] = {}
+        import threading as _threading
+        self._universe_lock = _threading.Lock()
         self.ttl = self.CACHE_TTL if demo else 60.0  # live data goes stale sooner
 
     def reconnect(self) -> None:
@@ -169,17 +173,57 @@ class AppState:
         self._regperf_cache.clear()
         self._alpaca_symbols = None  # and a different asset universe
         self._alpaca_names = {}
+        self._alpaca_sorted = []
+        self._alpaca_index = {}
+        self.prewarm_universe()      # reload in the background, never blocking
 
     def _ensure_alpaca_universe(self) -> None:
+        """Fetch Alpaca's tradable assets once and build the search index.
+
+        Alpaca returns tens of thousands of assets, so this is slow — callers
+        that must not block (search-as-you-type) use the non-blocking helpers
+        below and fall back to the bundled list until it is ready.
+        """
         if self.broker is None or self._alpaca_symbols is not None:
             return
-        try:
-            assets = self.broker.list_tradable_assets()  # [{symbol, name}]
-            self._alpaca_symbols = {a["symbol"] for a in assets}
-            self._alpaca_names = {a["symbol"]: a["name"] for a in assets if a.get("name")}
-        except Exception:  # noqa: BLE001 — cache empty to avoid refetch storms
-            self._alpaca_symbols = set()
-            self._alpaca_names = {}
+        with self._universe_lock:
+            if self._alpaca_symbols is not None:      # won the race elsewhere
+                return
+            try:
+                assets = self.broker.list_tradable_assets()  # [{symbol, name}]
+                symbols = {a["symbol"] for a in assets}
+                names = {a["symbol"]: a["name"] for a in assets if a.get("name")}
+            except Exception:  # noqa: BLE001 — cache empty to avoid refetch storms
+                symbols, names = set(), {}
+            # Precompute once: sorted list + first-letter buckets, so a keystroke
+            # is a dict hit over a few hundred names instead of a full re-scan.
+            ordered = sorted(symbols)
+            index: dict[str, list[str]] = {}
+            for sym in ordered:
+                index.setdefault(sym[:1], []).append(sym)
+            self._alpaca_names = names
+            self._alpaca_sorted = ordered
+            self._alpaca_index = index
+            self._alpaca_symbols = symbols       # set last — it is the ready flag
+
+    def prewarm_universe(self) -> None:
+        """Load the Alpaca asset universe in the background so the first
+        keystroke in the search box never waits on the network."""
+        import threading
+
+        if self.broker is None or self._alpaca_symbols is not None:
+            return
+
+        def work():
+            try:
+                self._ensure_alpaca_universe()
+            except Exception:  # noqa: BLE001 — never break startup
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def universe_ready(self) -> bool:
+        return self._alpaca_symbols is not None
 
     def alpaca_symbols(self) -> set[str] | None:
         """Set of tradable Alpaca symbols when connected (cached), else None."""
@@ -189,18 +233,41 @@ class AppState:
         return self._alpaca_symbols or None
 
     def name_for(self, symbol: str) -> str:
-        """Full asset name — Alpaca's when connected, else the bundled list."""
+        """Full asset name — Alpaca's when loaded, else the bundled list.
+
+        Never blocks: while the universe is still loading we just fall back.
+        """
         symbol = symbol.upper()
-        if self.broker is not None:
-            self._ensure_alpaca_universe()
-            name = self._alpaca_names.get(symbol)
-            if name:
-                return name
+        name = self._alpaca_names.get(symbol)
+        if name:
+            return name
         return ASSET_NAMES.get(symbol, "")
+
+    def search_symbols(self, q: str, limit: int = 30) -> tuple[list[str], bool]:
+        """Prefix-then-substring match. Non-blocking: uses the Alpaca index when
+        it is ready, otherwise the bundled universe. Returns (symbols, live)."""
+        if self.broker is not None:
+            self.prewarm_universe()               # kick off load, don't wait
+        live = self.universe_ready() and bool(self._alpaca_symbols)
+        if live:
+            starts = self._alpaca_index.get(q[:1], [])
+            hits = [s for s in starts if s.startswith(q)][:limit]
+            if len(hits) < limit:                 # top up with substring matches
+                seen = set(hits)
+                for s in self._alpaca_sorted:
+                    if q in s and s not in seen:
+                        hits.append(s)
+                        if len(hits) >= limit:
+                            break
+            return hits, True
+        universe = SYMBOL_UNIVERSE
+        starts = [s for s in universe if s.startswith(q)]
+        contains = [s for s in universe if q in s and s not in starts]
+        return (starts + contains)[:limit], False
 
     def search_universe(self) -> list[str]:
         al = self.alpaca_symbols()
-        return sorted(al) if al else SYMBOL_UNIVERSE
+        return self._alpaca_sorted if al else SYMBOL_UNIVERSE
 
     def close_for(self, symbol: str):
         """Close series for a symbol, always returning something renderable."""
@@ -340,20 +407,21 @@ def create_app(state: AppState):
 
     @app.get("/api/search")
     def search(q: str = ""):
+        """Search-as-you-type. Never blocks on the network: while Alpaca's asset
+        list is still loading it answers from the bundled universe."""
         q = (q or "").strip().upper()
-        connected = state.alpaca_symbols() is not None
-        universe = state.search_universe()
         if not q:
-            return {"results": DEFAULT_SYMBOLS, "connected": connected}
-        starts = [s for s in universe if s.startswith(q)]
-        contains = [s for s in universe if q in s and s not in starts]
-        results = (starts + contains)[:30]
-        # Offline we can't verify against Alpaca, so allow the exact ticker typed.
-        if not connected and q not in results:
+            return {"results": [{"symbol": s, "name": state.name_for(s)} for s in DEFAULT_SYMBOLS],
+                    "connected": state.universe_ready(), "loading": False}
+        results, live = state.search_symbols(q)
+        # Not verified against Alpaca (offline or still loading) — allow the
+        # exact ticker typed so the user is never blocked from adding it.
+        if not live and q not in results:
             results = [q] + results
         results = results[:30]
         return {"results": [{"symbol": s, "name": state.name_for(s)} for s in results],
-                "connected": connected}
+                "connected": live,
+                "loading": state.broker is not None and not state.universe_ready()}
 
     @app.get("/api/validate")
     def validate(symbol: str = ""):
@@ -854,6 +922,7 @@ def main() -> int:
     # Score the scan universe in the background while the user is reading the
     # dashboard, so their first ⚡ SCAN comes back instantly.
     state.prewarm("market", SCAN_UNIVERSE)
+    state.prewarm_universe()   # Alpaca asset list, so search is instant from the first keystroke
 
     url = f"http://{args.host}:{args.port}/"
     print(f"Mamba Terminal web HUD → {url}  (Ctrl-C to stop)")

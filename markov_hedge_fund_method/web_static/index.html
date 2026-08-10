@@ -8,7 +8,11 @@
   :root{
     --bg:#04070d; --panel:#0a1119; --panel2:#0d1826; --grid:#12283a;
     --edge:#1c3550; --cyan:#38f0e0; --cyan2:#7ef9ee; --green:#2fe08a; --red:#ff4d5e;
-    --amber:#f5c451; --ink:#cfe8ff; --dim:#5f7f9c; --dim2:#3d5a72; --glow:0 0 8px;
+    --amber:#f5c451; --ink:#e2f1ff; --dim:#8fadc6; --dim2:#5a7a94; --glow:0 0 8px;
+    /* Readable UI face for words; monospace kept for numbers so columns line up. */
+    --ui:"Inter","Segoe UI Variable Text","Segoe UI",-apple-system,BlinkMacSystemFont,
+         "Helvetica Neue",Arial,"Noto Sans",sans-serif;
+    --mono:"JetBrains Mono","DejaVu Sans Mono","Consolas",ui-monospace,monospace;
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
@@ -18,9 +22,15 @@
       radial-gradient(900px 600px at -10% 110%, #10202f 0%, transparent 55%),
       var(--bg);
     color:var(--ink);
-    font-family:"JetBrains Mono","DejaVu Sans Mono","Consolas",ui-monospace,monospace;
-    font-size:12px; overflow:hidden;
+    font-family:var(--ui);
+    font-size:13px; line-height:1.45; overflow:hidden;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
   }
+  /* Numbers, tickers and tables stay monospace so digits align in columns. */
+  .scan-score,.scan-meta b,.tile .v,.perf-card .row b,.blot-acct .kv b,
+  table.blot td.num,table.blot th.num,.ev-row .t,.clock,.mono,
+  .wl .item .px,.wl .item .sym,#c-price,.stat .v{font-family:var(--mono)}
+  table.blot{font-variant-numeric:tabular-nums}
   /* scanline overlay */
   body::after{
     content:""; position:fixed; inset:0; pointer-events:none; z-index:9999;
@@ -45,7 +55,8 @@
   .chip b{color:var(--ink)}
   .mode-chip{display:flex; align-items:center; gap:6px}
   .mode-chip select{background:#08121c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
-    font-family:inherit; font-size:11px; letter-spacing:1px; padding:2px 4px; cursor:pointer}
+    font-family:inherit; font-size:11px; letter-spacing:.5px; padding:2px 22px 2px 6px; cursor:pointer;
+    min-width:132px}
   .mode-chip select:focus{outline:none; border-color:var(--cyan)}
   .mode-chip.live{border-color:var(--red); box-shadow:0 0 10px rgba(255,77,94,.25)}
   .mode-chip.live select{color:var(--red)}
@@ -90,7 +101,8 @@
   .badge.watch{background:rgba(255,190,60,.12); color:var(--amber); border:1px solid var(--amber)}
   .badge.avoid{background:rgba(255,77,94,.12); color:var(--red); border:1px solid var(--red)}
   .scan-score{font-weight:700; font-size:17px; color:var(--cyan2); min-width:40px; text-align:right}
-  .scan-why{color:var(--ink); font-size:11.5px; line-height:1.5; margin:6px 0 5px; opacity:.92}
+  .scan-why{color:var(--ink); font-size:12.5px; line-height:1.6; margin:6px 0 6px; opacity:.96;
+    letter-spacing:0; max-width:104ch}
   .scan-meta{display:flex; gap:11px; align-items:center; flex-wrap:wrap; color:var(--dim); font-size:10px; letter-spacing:.5px}
   .scan-meta b{color:var(--ink)}
   .scan-actions{margin-left:auto}
@@ -659,23 +671,63 @@ function selectSymbol(s, addToWatch){
   loadState(false); loadNews(); loadPortfolio();
 }
 /* validate against Alpaca (when connected) before adding a searched symbol */
-async function pickSymbol(raw){
+function pickSymbol(raw){
   const s=(raw||'').trim().toUpperCase(); if(!s) return;
   hideSuggest(); $('search').value='';
-  try{
-    const v=await api('/api/validate?symbol='+encodeURIComponent(s));
-    if(!v.valid){ log('cannot add '+s+' — '+(v.reason||'not a valid Alpaca symbol'),'err'); return; }
-    if(v.source==='unverified') log('added '+s+' (unverified — connect an Alpaca account to validate symbols)','warn');
-    else if(v.tradable===false) log(s+' exists on Alpaca but is not currently tradable','warn');
-  }catch(e){ /* validation endpoint failed — allow */ }
-  selectSymbol(s, true);
+  selectSymbol(s, true);            // show it immediately — no waiting on the network
+  // Validate in the background; only speak up if something is actually wrong.
+  api('/api/validate?symbol='+encodeURIComponent(s)).then(v=>{
+    if(!v.valid){
+      log('cannot add '+s+' — '+(v.reason||'not a valid Alpaca symbol'),'err');
+      removeFromWatchlist(s);
+    }else if(v.tradable===false){
+      log(s+' exists on Alpaca but is not currently tradable','warn');
+    }
+  }).catch(()=>{ /* validation unavailable — leave it on the list */ });
 }
-/* ---- search suggestions dropdown ---- */
+/* ---- search suggestions dropdown ----
+   Keystrokes race: without a guard an older reply can land after a newer one and
+   overwrite it (the box then "responds late" with the wrong list). Every request
+   carries a sequence number, in-flight ones are aborted, and results are cached
+   per query so backspacing and retyping are instant. */
 let SUGG=[], SUGGI=-1, SUGG_CONN=false;
+let SUGG_SEQ=0, SUGG_ABORT=null;
+const SUGG_CACHE=new Map();
+function showSugg(list, connected){
+  SUGG=list||[]; SUGG_CONN=!!connected; SUGGI=-1; renderSuggest();
+}
 async function onSearchInput(){
-  const q=$('search').value.trim(); if(!q){ hideSuggest(); return; }
-  try{ const d=await api('/api/search?q='+encodeURIComponent(q)); SUGG=d.results||[]; SUGG_CONN=!!d.connected; SUGGI=-1; renderSuggest(); }
-  catch(e){ hideSuggest(); }
+  const q=$('search').value.trim().toUpperCase();
+  if(!q){ hideSuggest(); return; }
+
+  const cached=SUGG_CACHE.get(q);
+  if(cached){ showSugg(cached.results, cached.connected); return; }   // instant
+
+  // Narrowing an earlier query? Filter what we already have so the list keeps
+  // up with typing even before the server answers.
+  const prev=SUGG_CACHE.get(q.slice(0,-1));
+  if(prev){
+    const quick=prev.results.filter(o=>o.symbol.startsWith(q));
+    if(quick.length) showSugg(quick, prev.connected);
+  }
+
+  const seq=++SUGG_SEQ;
+  if(SUGG_ABORT) SUGG_ABORT.abort();          // cancel the previous keystroke
+  const ctl=(typeof AbortController!=='undefined') ? new AbortController() : null;
+  SUGG_ABORT=ctl;
+  try{
+    const r=await fetch('/api/search?q='+encodeURIComponent(q), ctl?{signal:ctl.signal}:undefined);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const d=await r.json();
+    if(seq!==SUGG_SEQ) return;                // a newer keystroke won — drop this
+    SUGG_CACHE.set(q, {results:d.results||[], connected:!!d.connected});
+    if(SUGG_CACHE.size>300) SUGG_CACHE.clear();
+    showSugg(d.results, d.connected);
+    if(d.loading) SUGG_CACHE.delete(q);       // don't cache a partial universe
+  }catch(e){
+    if(e && e.name==='AbortError') return;    // superseded — expected
+    if(seq===SUGG_SEQ && !prev) hideSuggest();
+  }
 }
 function renderSuggest(){
   const el=$('sugg-list');

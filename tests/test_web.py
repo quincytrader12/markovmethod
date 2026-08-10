@@ -275,3 +275,43 @@ def test_forecast_converges_to_stationary():
     stat = st["stationary"]   # [bear, sideways, bull]
     assert abs(far["bear"] - stat[0]) < 0.05
     assert abs(far["bull"] - stat[2]) < 0.05
+
+
+def test_search_never_blocks_while_universe_loads():
+    """Typing must answer instantly even while Alpaca's asset list is fetching."""
+    import time as _t
+
+    class SlowBroker:
+        def list_tradable_assets(self):
+            _t.sleep(1.5)
+            return [{"symbol": "AAPL", "name": "Apple Inc."},
+                    {"symbol": "AACG", "name": "ATA Creativity"}]
+
+    state = AppState(Settings(ticker="SPY", mode=Mode.PAPER), demo=False)
+    state.broker = SlowBroker()
+    client = TestClient(create_app(state))
+
+    t0 = _t.time()
+    d = client.get("/api/search", params={"q": "AA"}).json()
+    assert _t.time() - t0 < 0.5, "search must not wait on the asset download"
+    assert d["loading"] is True          # told the client the universe is warming
+    assert d["results"]                  # still answered, from the bundled list
+
+
+def test_search_uses_alpaca_index_once_loaded():
+    class Broker:
+        def list_tradable_assets(self):
+            return [{"symbol": s, "name": s + " Corp"} for s in ("AAPL", "AACG", "AMD", "ZZZ")]
+
+    state = AppState(Settings(ticker="SPY", mode=Mode.PAPER), demo=False)
+    state.broker = Broker()
+    state._ensure_alpaca_universe()       # simulate the background load finishing
+    client = TestClient(create_app(state))
+
+    d = client.get("/api/search", params={"q": "AA"}).json()
+    syms = [r["symbol"] for r in d["results"]]
+    assert d["connected"] is True and d["loading"] is False
+    assert syms == ["AACG", "AAPL"]       # prefix hits, sorted
+    assert all(r["name"] for r in d["results"])
+    # the prefix index is built once, not rebuilt per keystroke
+    assert state._alpaca_index["A"] == ["AACG", "AAPL", "AMD"]
