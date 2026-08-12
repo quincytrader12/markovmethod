@@ -42,6 +42,7 @@ from .market_data import (
 from .markov2 import Strategy
 from .news import fetch_news
 from .orders import OrderTicket, OrderValidationError
+from .telegram import TelegramError, TelegramNotifier, format_flip, format_scan
 from .webstate import _rsi, market_state, quote_state
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "web_static")
@@ -153,10 +154,12 @@ class AppState:
         self.accounts = AccountStore()
         self.journal = JournalStore()
         self.alerts = AlertEngine()
+        self.telegram = TelegramNotifier()
         self.broker = None if demo else make_broker(settings)
         self._state_cache: dict[str, tuple[float, dict]] = {}
         self._regperf_cache: dict[str, tuple[float, dict]] = {}
         self._scan_cache: dict[str, tuple[float, list]] = {}
+        self._ohlc_cache: dict[str, tuple[float, object, str]] = {}
         self._news_cache: dict[str, tuple[float, list]] = {}
         self._alpaca_symbols: set[str] | None = None
         self._alpaca_names: dict[str, str] = {}
@@ -171,6 +174,7 @@ class AppState:
         self._state_cache.clear()   # a new account may change the data source
         self._scan_cache.clear()
         self._regperf_cache.clear()
+        self._ohlc_cache.clear()
         self._alpaca_symbols = None  # and a different asset universe
         self._alpaca_names = {}
         self._alpaca_sorted = []
@@ -269,23 +273,36 @@ class AppState:
         al = self.alpaca_symbols()
         return self._alpaca_sorted if al else SYMBOL_UNIVERSE
 
-    def close_for(self, symbol: str):
-        """Close series for a symbol, always returning something renderable."""
-        if self.demo:
-            return synthetic_close(seed=_seed(symbol)), "synthetic (demo)"
-        try:
-            return get_history(replace(self.settings, ticker=symbol)), "live"
-        except Exception:  # noqa: BLE001 — never leave the HUD blank
-            return synthetic_close(seed=_seed(symbol)), "synthetic (data unavailable)"
+    # Raw price history, cached per symbol. Adding a symbol used to download its
+    # history twice — once for the watchlist quote and again for the chart. Both
+    # now share this one fetch, which is the bulk of the "adding is slow" wait.
+    OHLC_TTL = 300.0
 
     def ohlc_for(self, symbol: str):
-        """OHLC frame for a symbol (for candlesticks), always renderable."""
+        """OHLC frame for a symbol. Returns (frame, source) where source is
+        'live', 'synthetic (demo)' or 'synthetic (data unavailable)'.
+
+        Callers MUST honour the source: a synthetic frame is fabricated data and
+        must never be presented as though it described the real asset.
+        """
+        symbol = symbol.upper()
+        cached = self._ohlc_cache.get(symbol)
+        if cached and (time.monotonic() - cached[0]) < self.OHLC_TTL:
+            return cached[1], cached[2]
         if self.demo:
-            return synthetic_ohlc(seed=_seed(symbol)), "synthetic (demo)"
-        try:
-            return get_ohlc(replace(self.settings, ticker=symbol)), "live"
-        except Exception:  # noqa: BLE001 — never leave the HUD blank
-            return synthetic_ohlc(seed=_seed(symbol)), "synthetic (data unavailable)"
+            df, source = synthetic_ohlc(seed=_seed(symbol)), "synthetic (demo)"
+        else:
+            try:
+                df, source = get_ohlc(replace(self.settings, ticker=symbol)), "live"
+            except Exception:  # noqa: BLE001 — never leave the HUD blank
+                df, source = synthetic_ohlc(seed=_seed(symbol)), "synthetic (data unavailable)"
+        self._ohlc_cache[symbol] = (time.monotonic(), df, source)
+        return df, source
+
+    def close_for(self, symbol: str):
+        """Close series for a symbol — derived from the shared OHLC fetch."""
+        df, source = self.ohlc_for(symbol)
+        return df["Close"], source
 
     def intraday_for(self, symbol: str, tf: str):
         """Intraday OHLC (1D/1W) for a symbol, always renderable."""
@@ -325,13 +342,26 @@ class AppState:
         self._scan_cache[scope] = (time.monotonic(), results)
         return results
 
-    def prewarm(self, scope: str, symbols: list) -> None:
-        """Warm the scan cache in the background so the first scan is instant."""
+    def prewarm(self, scope: str, symbols: list, *, delay: float = 8.0,
+                workers: int = 2) -> None:
+        """Warm the scan cache in the background so the first scan is instant.
+
+        Deliberately lazy and gentle: it waits for the dashboard to finish
+        loading, then scores with only a couple of threads. Warming is a
+        nice-to-have — it must never compete with the user's own requests for
+        CPU or bandwidth, which is what was making startup feel slow.
+        """
         import threading
 
+        from .scanner import score_symbols
+
         def work():
+            time.sleep(delay)                       # let the UI settle first
+            if scope in self._scan_cache:
+                return
             try:
-                self.scored_universe(scope, symbols)
+                results = score_symbols(self, symbols, workers=workers)
+                self._scan_cache[scope] = (time.monotonic(), results)
             except Exception:  # noqa: BLE001 — a warm-up must never break startup
                 pass
 
@@ -555,8 +585,11 @@ def create_app(state: AppState):
                     regimes[s], prices[s] = q["regime"], q["lastPrice"]
                 except Exception:  # noqa: BLE001
                     pass
-            events += state.alerts.check_regimes(regimes)
+            flips = state.alerts.check_regimes(regimes)
+            events += flips
             events += state.alerts.check_prices(prices)
+            if flips and state.telegram.status()["sendFlips"]:
+                _tg_send("\n".join(format_flip(f) for f in flips))
 
         day_pl = None
         if state.broker is not None:
@@ -573,6 +606,75 @@ def create_app(state: AppState):
         return {"events": events, "recent": state.alerts.recent(),
                 "halted": state.alerts.halted, "lossLimit": state.alerts.loss_limit,
                 "dayPl": day_pl, "priceAlerts": state.alerts.price_alerts()}
+
+    # ── telegram ─────────────────────────────────────────────────────────────
+    def _tg_send(text: str) -> None:
+        """Fire-and-forget delivery — Telegram must never block or break a poll."""
+        import threading
+
+        def work():
+            try:
+                state.telegram.send(text)
+            except Exception:  # noqa: BLE001
+                pass
+
+        if text and state.telegram.enabled:
+            threading.Thread(target=work, daemon=True).start()
+
+    @app.get("/api/telegram")
+    def telegram_status():
+        return state.telegram.status()
+
+    @app.post("/api/telegram/connect")
+    async def telegram_connect(request: Request):
+        data = await request.json()
+        try:
+            status = state.telegram.connect(str(data.get("token", "")),
+                                            str(data.get("chatId", "") or ""))
+        except TelegramError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        _tg_send("✅ <b>Mamba Terminal connected.</b> "
+                 "You'll get scanner reports and regime-flip alerts here.")
+        return status
+
+    @app.post("/api/telegram/disconnect")
+    def telegram_disconnect():
+        return state.telegram.disconnect()
+
+    @app.post("/api/telegram/settings")
+    async def telegram_settings(request: Request):
+        data = await request.json()
+        state.telegram.save(
+            sendScans=bool(data.get("sendScans", True)),
+            sendFlips=bool(data.get("sendFlips", True)),
+            minScore=int(data.get("minScore", 70)))
+        return state.telegram.status()
+
+    @app.post("/api/telegram/test")
+    def telegram_test():
+        try:
+            state.telegram.send("🐍 <b>Test message</b> from Mamba Terminal — "
+                                "Telegram is wired up correctly.")
+        except TelegramError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"ok": True}
+
+    @app.post("/api/telegram/send_scan")
+    def telegram_send_scan(universe: str = "market", top: int = 5):
+        """Push the current scanner picks to Telegram, on demand."""
+        from .scanner import rank
+        syms = SCAN_GROUPS.get(universe, SCAN_UNIVERSE)
+        key = universe if universe in SCAN_GROUPS else "market"
+        cfg = state.telegram.status()
+        result = rank(state.scored_universe(key, syms), top=max(1, top))
+        text = format_scan(result["results"], min_score=cfg["minScore"], limit=top)
+        if not text:
+            return {"ok": False, "reason": f"nothing scored at or above {cfg['minScore']}"}
+        try:
+            state.telegram.send(text)
+        except TelegramError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"ok": True, "sent": len(result["results"])}
 
     @app.post("/api/alerts/price")
     async def add_price_alert(request: Request):
@@ -640,12 +742,21 @@ def create_app(state: AppState):
             if cached and (time.monotonic() - cached[0]) < state.ttl:
                 p = cached[1]
                 return {"ticker": sym, "lastPrice": p["lastPrice"], "regime": p["regime"],
-                        "name": p.get("name", "")}
+                        "name": p.get("name", ""),
+                        "dataSource": p.get("dataSource", "live"),
+                        "real": not str(p.get("dataSource", "")).startswith("synthetic")
+                                or state.demo}
             try:
-                close, _ = state.close_for(sym)
+                close, source = state.close_for(sym)
                 q = quote_state(close, sym, window=state.settings.window,
                                 threshold=state.settings.threshold)
                 q["name"] = state.name_for(sym)
+                # Be honest about fabricated data: a regime computed on the
+                # synthetic fallback says nothing about the real asset.
+                q["dataSource"] = source
+                q["real"] = state.demo or not source.startswith("synthetic")
+                if not q["real"]:
+                    q["regime"] = "unknown"
                 return q
             except Exception:  # noqa: BLE001 — a bad symbol must not sink the batch
                 return None

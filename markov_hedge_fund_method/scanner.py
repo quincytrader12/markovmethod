@@ -191,11 +191,12 @@ def _rationale(label, regime, days, bull5, bull20, price, ma20, ma50,
     return " ".join(parts)
 
 
-def score_symbols(state, symbols) -> list[dict]:
+def score_symbols(state, symbols, *, workers: int = 16) -> list[dict]:
     """Score every symbol in parallel and return the full unfiltered list.
 
     This is the only expensive step, so callers cache its result and apply
-    filters/sorting on top — changing a filter then costs nothing.
+    filters/sorting on top — changing a filter then costs nothing. Background
+    warm-ups pass a small `workers` count so they cannot starve the UI.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -210,11 +211,17 @@ def score_symbols(state, symbols) -> list[dict]:
 
     def one(sym):
         try:
-            return score_payload(state.state_payload(sym))
+            payload = state.state_payload(sym)
+            # Never rank a name whose price history failed to download — its
+            # score would be computed from the synthetic placeholder series.
+            source = str(payload.get("dataSource", ""))
+            if source.startswith("synthetic") and not getattr(state, "demo", False):
+                return None
+            return score_payload(payload)
         except Exception:  # noqa: BLE001 — one bad symbol must not sink the scan
             return None
 
-    with ThreadPoolExecutor(max_workers=min(16, len(ordered))) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(ordered)))) as pool:
         return [r for r in pool.map(one, ordered) if r]
 
 

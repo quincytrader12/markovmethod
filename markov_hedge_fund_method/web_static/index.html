@@ -258,6 +258,11 @@
   .r-bull{color:var(--green); border:1px solid rgba(47,224,138,.5); background:rgba(47,224,138,.08)}
   .r-bear{color:var(--red); border:1px solid rgba(255,77,94,.5); background:rgba(255,77,94,.08)}
   .r-sideways{color:var(--dim); border:1px solid var(--edge); background:#0a151f}
+  .r-loading{color:var(--cyan2); border:1px solid var(--edge); background:#0a151f; animation:pulse 1.1s infinite}
+  .chip.src-warn{border-color:var(--amber); color:var(--amber)}
+  .chip.src-warn b{color:var(--amber)}
+  .r-nodata,.r-unknown{color:var(--amber); border:1px solid rgba(245,196,81,.5); background:rgba(245,196,81,.08)}
+  .wl .item.loading .px{opacity:.4}
 
   /* gauge */
   .gauge-wrap{display:flex; flex-direction:column; align-items:center; gap:2px}
@@ -629,9 +634,9 @@ async function changeMode(){
 
 /* ---------- watchlist ---------- */
 function wlItemHTML(s){
-  return `<div class="item" data-sym="${s}" title="${s}">
+  return `<div class="item loading" data-sym="${s}" title="${s} — loading…">
     <button class="pick" onclick="selectSymbol('${s}',false)">
-      <span class="sym">${s}</span><span class="rchip r-sideways" data-r>—</span><span class="px" data-px>—</span>
+      <span class="sym">${s}</span><span class="rchip r-loading" data-r>···</span><span class="px" data-px>—</span>
     </button>
     <button class="rm" title="remove from watchlist" onclick="removeFromWatchlist('${s}')">✕</button>
   </div>`;
@@ -649,7 +654,17 @@ async function refreshWatchlist(syms){
     const d = await api('/api/quotes?symbols='+encodeURIComponent(syms.join(',')));
     for(const q of (d.quotes||[])){
       const it = document.querySelector(`.wl .item[data-sym="${q.ticker}"]`); if(!it) continue;
-      const chip = it.querySelector('[data-r]'); chip.textContent = q.regime; chip.className = 'rchip r-'+q.regime;
+      const chip = it.querySelector('[data-r]');
+      it.classList.remove('loading');
+      if(q.real === false){
+        // No real price history came back — never show a regime derived from
+        // the synthetic fallback, it would be pure fiction about this asset.
+        chip.textContent='no data'; chip.className='rchip r-nodata';
+        it.querySelector('[data-px]').textContent='—';
+        it.title = q.ticker+' — no market data available (check the symbol, or your connection)';
+        continue;
+      }
+      chip.textContent = q.regime; chip.className = 'rchip r-'+q.regime;
       it.querySelector('[data-px]').textContent = fmt(q.lastPrice);
       it.title = q.name ? `${q.ticker} — ${q.name}` : q.ticker;
     }
@@ -792,9 +807,18 @@ async function loadState(force){
   LAST = st;
   $('c-sym').textContent = st.ticker;
   $('c-price').textContent = fmt(st.lastPrice);
-  $('v-source').textContent = (st.dataSource||'').toUpperCase();
+  const src=(st.dataSource||''), fake = src.startsWith('synthetic') && !CFG.demo;
+  $('v-source').textContent = src.toUpperCase();
+  $('chip-source').classList.toggle('src-warn', fake);
   const sc = st.signal>0?C.bull:st.signal<0?C.bear:C.sideways;
-  $('c-sig').innerHTML = `regime <b style="color:${C[st.regime]}">${st.currentStateName}</b> · signal <b style="color:${sc}">${st.signal>0?'+':''}${fmt(st.signal,3)}</b> · target ${esc(st.targetLabel)}`;
+  if(fake){
+    // The fetch failed and this chart is placeholder data — say so plainly
+    // rather than letting it read as this asset's real regime.
+    $('c-sig').innerHTML = '<b style="color:var(--amber)">⚠ NO MARKET DATA</b> — '+
+      'placeholder chart; this is not '+esc(st.ticker)+'’s real behaviour. Check the symbol or your connection.';
+  }else{
+    $('c-sig').innerHTML = `regime <b style="color:${C[st.regime]}">${st.currentStateName}</b> · signal <b style="color:${sc}">${st.signal>0?'+':''}${fmt(st.signal,3)}</b> · target ${esc(st.targetLabel)}`;
+  }
   refreshChart();
   drawGauge(st.greedFear);
   drawMatrix(st);
@@ -1391,7 +1415,7 @@ async function delJournal(id){
 /* ---------- alerts + risk automation ---------- */
 let NOTIFY=false, SEEN=new Set(), BELL=0, HALTED=false;
 let LAST_ALERTS={priceAlerts:[], recent:[], lossLimit:null, dayPl:null, halted:false};
-function openAlerts(){ $('alrt-modal').classList.add('open'); renderAlerts(); loadAlerts(); BELL=0; updateBell(); }
+function openAlerts(){ $('alrt-modal').classList.add('open'); renderAlerts(); loadAlerts(); loadTelegram(); BELL=0; updateBell(); }
 function closeAlerts(){ $('alrt-modal').classList.remove('open'); }
 function updateBell(){ const b=$('bell-badge'); if(b){ b.textContent=BELL?BELL:''; b.className=BELL?'bell-badge':''; } }
 function beep(level){
@@ -1448,6 +1472,7 @@ function renderAlerts(){
   const dp = d.dayPl==null?'—':'$'+fmt(d.dayPl);
   const halt = HALTED ? '<div class="halt-banner">⛔ <b>TRADING HALTED</b> — kill switch active; new orders are '+
     'blocked. <button class="btn-x" onclick="resetKill()">Reset</button></div>' : '';
+  const tg = renderTelegram();
   const risk = '<h4>Risk controls</h4>'+halt+
     '<div class="risk-row">Daily loss limit&nbsp; $ <input id="ll-in" type="number" placeholder="none" value="'+ll+'">'+
     '<button class="btn-x" onclick="saveLossLimit()">Save</button>'+
@@ -1472,8 +1497,68 @@ function renderAlerts(){
     ev+=d.recent.map(e=>'<div class="ev-row '+(e.level||'info')+'"><span class="t">'+esc(e.at||'')+
       '</span><span class="m">'+esc(e.message)+'</span></div>').join('');
   }else{ ev+='<div class="blot-empty">no alerts yet — regime flips on your watchlist and price triggers appear here</div>'; }
-  body.innerHTML=risk+pa+ev;
+  body.innerHTML=risk+tg+pa+ev;
 }
+/* ---- telegram ---- */
+let TG={configured:false, sendScans:true, sendFlips:true, minScore:70};
+async function loadTelegram(){
+  try{ TG=await api('/api/telegram'); }catch(e){}
+  if($('alrt-modal').classList.contains('open')) renderAlerts();
+}
+function renderTelegram(){
+  if(!TG.configured){
+    return '<h4>Telegram reports</h4>'+
+      '<div class="blot-empty">Get scanner picks and regime-flip alerts on your phone.<br>'+
+      '<b>1.</b> On Telegram, message <b>@BotFather</b> → <code>/newbot</code> → copy the token.&nbsp; '+
+      '<b>2.</b> Send your new bot any message (so it can reply to you).&nbsp; '+
+      '<b>3.</b> Paste the token below.</div>'+
+      '<div class="risk-row"><input id="tg-token" style="width:320px" placeholder="bot token from @BotFather">'+
+      '<button class="btn-x" onclick="connectTelegram()">Connect</button></div>';
+  }
+  return '<h4>Telegram reports</h4>'+
+    '<div class="risk-row"><span class="pl-pos">✓ connected</span>'+
+    '<label class="fchk"><input type="checkbox" id="tg-flips"'+(TG.sendFlips?' checked':'')+
+      ' onchange="saveTelegram()"><span>Regime-flip alerts</span></label>'+
+    '<label class="fchk"><input type="checkbox" id="tg-scans"'+(TG.sendScans?' checked':'')+
+      ' onchange="saveTelegram()"><span>Scanner reports</span></label>'+
+    'Min score <input id="tg-min" type="number" style="width:70px" value="'+TG.minScore+
+      '" onchange="saveTelegram()">'+
+    '<button class="btn-x" onclick="testTelegram()">Send test</button>'+
+    '<button class="btn-x" onclick="sendScanTelegram()">📤 Send picks now</button>'+
+    '<button class="btn-x" onclick="disconnectTelegram()">Disconnect</button></div>';
+}
+async function connectTelegram(){
+  const token=$('tg-token').value.trim();
+  if(!token){ log('paste your bot token first','err'); return; }
+  try{
+    TG=await api('/api/telegram/connect',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({token:token})});
+    log('Telegram connected — check your chat for a confirmation','ok'); renderAlerts();
+  }catch(e){ log('Telegram: '+e.message,'err'); }
+}
+async function saveTelegram(){
+  const body={sendScans:$('tg-scans').checked, sendFlips:$('tg-flips').checked,
+              minScore:Number($('tg-min').value)||70};
+  try{ TG=await api('/api/telegram/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(body)}); }
+  catch(e){ log('could not save Telegram settings: '+e.message,'err'); }
+}
+async function testTelegram(){
+  try{ await api('/api/telegram/test',{method:'POST'}); log('test message sent to Telegram','ok'); }
+  catch(e){ log('Telegram test failed: '+e.message,'err'); }
+}
+async function sendScanTelegram(){
+  try{
+    const r=await api('/api/telegram/send_scan?universe='+SCAN_U+'&top=5',{method:'POST'});
+    log(r.ok?'scanner picks sent to Telegram':'Telegram: '+r.reason, r.ok?'ok':'warn');
+  }catch(e){ log('Telegram send failed: '+e.message,'err'); }
+}
+async function disconnectTelegram(){
+  if(!confirm('Disconnect Telegram?')) return;
+  try{ TG=await api('/api/telegram/disconnect',{method:'POST'}); renderAlerts(); }
+  catch(e){ log('disconnect failed: '+e.message,'err'); }
+}
+
 async function saveLossLimit(){
   const v=$('ll-in').value.trim();
   try{ await api('/api/risk/limit',{method:'POST',headers:{'Content-Type':'application/json'},
