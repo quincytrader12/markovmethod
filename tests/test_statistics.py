@@ -155,3 +155,27 @@ def test_proven_filter_uses_deflated_probability():
     rows = [dict(_row("GOOD", 2.5), dsr=0.99), dict(_row("MEH", 1.1), dsr=0.60)]
     out = rank(rows, top=10, proven_only=True)
     assert [r["symbol"] for r in out["results"]] == ["GOOD"]
+
+
+# ── plain-English readout ────────────────────────────────────────────────────
+def test_plain_summary_is_readable_and_honest():
+    from markov_hedge_fund_method.webstate import plain_summary
+    strong = plain_summary("SPY", "bull", 4, 58.0, 0.99, True, 26)
+    assert "SPY Bull" in strong and "day 4" in strong
+    assert "58%" in strong and "26 comparable" in strong
+    assert "supports the read" in strong
+
+    weak = plain_summary("XYZ", "bear", 2, 44.0, 0.60, False, 12)
+    assert "XYZ Bear" in weak and "too thin to trade on" in weak
+
+    mid = plain_summary("A", "bull", 3, 55.0, 0.85, False, 25)
+    assert "short of significance" in mid
+
+    empty = plain_summary("ABC", "sideways", 0, 50.0, 0.0, False, 0)
+    assert "Insufficient history" in empty
+
+
+def test_payload_includes_plain_summary():
+    st = market_state(synthetic_close(seed=3), "SPY")
+    assert st["plainSummary"].startswith("SPY ")
+    assert "comparable setups" in st["plainSummary"]

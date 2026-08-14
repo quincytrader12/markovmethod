@@ -145,6 +145,28 @@ def greed_fear(close: pd.Series) -> dict:
     }
 
 
+def plain_summary(ticker: str, regime: str, days: int, stay_pct: float,
+                  confidence: float, reliable: bool, n: int) -> str:
+    """One terse read-out of what the numbers on this screen amount to.
+
+    Written in desk shorthand, not explainer prose: regime, how long it has
+    run, how often it persisted historically, and — the part the rest of the
+    panel cannot show — whether the sample is big enough to act on.
+    """
+    label = {"bull": "Bull", "bear": "Bear", "sideways": "Sideways"}.get(regime, "Sideways")
+    head = f"{ticker} {label}" + (f", day {days}." if days else ".")
+    if not n:
+        return f"{head} Insufficient history to estimate persistence."
+    body = f" Persisted in {round(stay_pct)}% of {n} comparable setups"
+    if reliable:
+        tail = " — sample supports the read."
+    elif confidence >= 0.8:
+        tail = " — suggestive, but short of significance."
+    else:
+        tail = " — sample too thin to trade on."
+    return head + body + tail
+
+
 def quote_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: float = 0.02) -> dict:
     """Cheap watchlist quote: last price + current regime, no matrix/backtest."""
     labels = label_regimes(close, window=window, threshold=threshold)
@@ -242,6 +264,11 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
         "matrix": [[round(float(v), 4) for v in row] for row in snap.honest_matrix],
         "matrixCI": ci,
         "signalStats": sig_stats,
+        "plainSummary": plain_summary(
+            ticker, _REGIME_KEY[snap.current_state],
+            _timeline(labels)["daysInRegime"],
+            float(snap.honest_matrix[snap.current_state][snap.current_state]) * 100.0,
+            sc["confidence"], sc["reliable"], sc["n"]),
         "stationary": [round(float(v), 4) for v in snap.stationary],
         "states": STATES,
         "diagonalInflation": [round(float(v), 2) for v in snap.comparison.inflation],
