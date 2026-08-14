@@ -259,6 +259,9 @@
   .r-bear{color:var(--red); border:1px solid rgba(255,77,94,.5); background:rgba(255,77,94,.08)}
   .r-sideways{color:var(--dim); border:1px solid var(--edge); background:#0a151f}
   .r-loading{color:var(--cyan2); border:1px solid var(--edge); background:#0a151f; animation:pulse 1.1s infinite}
+  .ci{display:block; font-size:8.5px; color:var(--dim2); letter-spacing:0; margin-top:1px; font-family:var(--mono)}
+  .ncell{color:var(--dim); font-size:10px; text-align:center; font-family:var(--mono)}
+  .ncell.thin{color:var(--amber)}
   .chip.src-warn{border-color:var(--amber); color:var(--amber)}
   .chip.src-warn b{color:var(--amber)}
   .r-nodata,.r-unknown{color:var(--amber); border:1px solid rgba(245,196,81,.5); background:rgba(245,196,81,.08)}
@@ -497,6 +500,7 @@
             <div class="stat"><div class="v" id="wf-sharpe">—</div><div class="k">sharpe</div></div>
             <div class="stat"><div class="v" id="wf-win">—</div><div class="k">win rate</div></div>
             <div class="stat"><div class="v" id="wf-dd">—</div><div class="k">max DD</div></div>
+            <div class="stat" title="Probability this Sharpe reflects a real edge rather than luck, given the sample length and the shape of the return distribution"><div class="v" id="wf-psr">—</div><div class="k">edge is real</div></div>
           </div>
         </div>
         <div class="panel">
@@ -817,7 +821,14 @@ async function loadState(force){
     $('c-sig').innerHTML = '<b style="color:var(--amber)">⚠ NO MARKET DATA</b> — '+
       'placeholder chart; this is not '+esc(st.ticker)+'’s real behaviour. Check the symbol or your connection.';
   }else{
-    $('c-sig').innerHTML = `regime <b style="color:${C[st.regime]}">${st.currentStateName}</b> · signal <b style="color:${sc}">${st.signal>0?'+':''}${fmt(st.signal,3)}</b> · target ${esc(st.targetLabel)}`;
+    const ss=st.signalStats||{};
+    // A signal that can't be told apart from noise should not read like a
+    // trade instruction — say how confident the sample actually makes us.
+    const conf = ss.confidence==null ? '' :
+      (ss.reliable
+        ? ` · <b style="color:var(--green)" title="Statistically distinguishable from noise (z=${ss.z}, n=${ss.n})">✓ ${(ss.confidence*100).toFixed(0)}% confident</b>`
+        : ` · <b style="color:var(--amber)" title="Not distinguishable from noise — only ${ss.n} observations behind this row (z=${ss.z})">⚠ low confidence (${(ss.confidence*100).toFixed(0)}%, n=${ss.n})</b>`);
+    $('c-sig').innerHTML = `regime <b style="color:${C[st.regime]}">${st.currentStateName}</b> · signal <b style="color:${sc}">${st.signal>0?'+':''}${fmt(st.signal,3)}</b> · target ${esc(st.targetLabel)}${conf}`;
   }
   refreshChart();
   drawGauge(st.greedFear);
@@ -862,6 +873,16 @@ function renderExtras(st){
   drawEquity(st.metrics.equity);
   $('wf-sharpe').textContent = st.metrics.sharpe==null?'—':fmt(st.metrics.sharpe,2);
   $('wf-sharpe').style.color = (st.metrics.sharpe||0)>=0?C.bull:C.bear;
+  // A Sharpe means little without knowing how much data stands behind it.
+  const psr=st.metrics.psr;
+  $('wf-sharpe').title = psr==null ? '' :
+    `${(psr*100).toFixed(1)}% chance this Sharpe is real, not luck (${st.metrics.psrVerdict}) — `+
+    `based on ${st.metrics.nObs} observations, skew ${st.metrics.skew}, kurtosis ${st.metrics.kurtosis}`;
+  const pe=$('wf-psr');
+  if(pe){
+    pe.textContent = psr==null?'—':(psr*100).toFixed(0)+'%';
+    pe.style.color = psr==null?'':(psr>=0.95?C.bull:psr>=0.8?'var(--amber)':C.bear);
+  }
   $('wf-win').textContent = st.metrics.winRate==null?'—':fmt(st.metrics.winRate*100,1)+'%';
   $('wf-dd').textContent = st.metrics.maxDrawdown==null?'—':fmt(st.metrics.maxDrawdown*100,1)+'%';
   renderForecast(st.forecast);
@@ -1021,8 +1042,8 @@ function drawGauge(gf){
   }).join('');
 }
 function drawMatrix(st){
-  const t=$('matrix'); const s=st.states; const P=st.matrix;
-  let html='<tr><th>from ╲ to</th>'+s.map(n=>`<th>${n}</th>`).join('')+'</tr>';
+  const t=$('matrix'); const s=st.states; const P=st.matrix; const ci=st.matrixCI;
+  let html='<tr><th>from ╲ to</th>'+s.map(n=>`<th>${n}</th>`).join('')+'<th>n</th></tr>';
   for(let i=0;i<3;i++){
     const rc = i===0?C.bear:i===2?C.bull:C.sideways;
     html+=`<tr><th style="color:${rc}">${s[i]}</th>`;
@@ -1030,8 +1051,20 @@ function drawMatrix(st){
       const v=(P[i][j]*100).toFixed(1)+'%';
       const diag=i===j;
       const style = diag?`color:${rc};background:rgba(56,240,224,.06)`:'color:#6f8ba3';
-      html+=`<td class="${diag?'diag':''}" style="${style}">${v}</td>`;
+      // The interval is the honest part: a rate from 18 samples is not the
+      // same claim as the same rate from 200.
+      let tip=v, band='';
+      if(ci){
+        const lo=(ci.lo[i][j]*100).toFixed(0), hi=(ci.hi[i][j]*100).toFixed(0);
+        tip=`${v} — could be anywhere from ${lo}% to ${hi}% (based on ${ci.n[i]} observations)`;
+        band=`<span class="ci">${lo}–${hi}%</span>`;
+      }
+      html+=`<td class="${diag?'diag':''}" style="${style}" title="${tip}">${v}${band}</td>`;
     }
+    const n = ci ? ci.n[i] : null;
+    const thin = ci && ci.thin[i];
+    html+= n===null ? '<td></td>'
+      : `<td class="ncell${thin?' thin':''}" title="${thin?'Thin data — treat this row as a rough guess':'observations behind this row'}">${n}${thin?' ⚠':''}</td>`;
     html+='</tr>';
   }
   t.innerHTML=html;
@@ -1205,6 +1238,7 @@ function renderScan(d){
         <span>MOM <b>${r.momentum}%</b></span>
         <span>SHARPE <b>${sh}</b></span>
         <span>WIN <b>${wr}</b></span>
+        ${r.dsr==null?'':`<span title="Probability the edge is real after correcting for the ${r.nTrials||'many'} names scanned — picking the best of many inflates backtests">EDGE <b style="color:${r.dsr>=0.95?'var(--green)':r.dsr>=0.8?'var(--amber)':'var(--red)'}">${(r.dsr*100).toFixed(0)}%</b></span>`}
         <span>PRICE <b>$${r.lastPrice}</b></span>
         <span class="scan-actions">
           <button onclick="watchFromScan('${esc(r.symbol)}', this)">+ WATCH</button>
@@ -1664,7 +1698,7 @@ boot();
         <option value="10">≤ 10 days</option>
       </select>
       <label class="fchk"><input type="checkbox" id="f-proven" onchange="applyScanFilters()">
-        <span title="Only names where this strategy has a real track record (Sharpe &gt; 0 and win rate &gt; 50%)">✓ Proven edge only</span></label>
+        <span title="Only names with a 95%+ chance the edge is real, after correcting for how many names were scanned (picking the best of many inflates backtests)">✓ Proven edge only (95%)</span></label>
       <select class="seg-sel" id="f-sort" onchange="applyScanFilters()">
         <option value="score">Sort: best score</option>
         <option value="fresh">Sort: freshest flip</option>

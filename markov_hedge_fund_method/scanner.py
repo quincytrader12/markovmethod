@@ -54,6 +54,9 @@ def score_payload(p: dict) -> dict:
     sharpe = metrics.get("sharpe")
     winrate = metrics.get("winRate")
     mdd = metrics.get("maxDrawdown")
+    n_obs = int(metrics.get("nObs", 0) or 0)
+    skew = float(metrics.get("skew", 0.0) or 0.0)
+    kurt = float(metrics.get("kurtosis", 3.0) or 3.0)
     days = int(p.get("regimeTimeline", {}).get("daysInRegime", 0) or 0)
     greed = int(p.get("greedFear", {}).get("score", 50) or 50)
 
@@ -145,6 +148,13 @@ def score_payload(p: dict) -> dict:
         "sharpe": None if sharpe is None else round(float(sharpe), 2),
         "winRate": None if winrate is None else round(float(winrate), 4),
         "maxDrawdown": None if mdd is None else round(float(mdd), 4),
+        "psr": metrics.get("psr"),
+        "nObs": n_obs,
+        "skew": skew,
+        "kurtosis": kurt,
+        # filled in by deflate() once the whole scan is known
+        "dsr": None,
+        "edgeVerdict": None,
         "factors": {k: round(v, 1) for k, v in factors.items()},
         "rationale": rationale,
     }
@@ -222,7 +232,42 @@ def score_symbols(state, symbols, *, workers: int = 16) -> list[dict]:
             return None
 
     with ThreadPoolExecutor(max_workers=max(1, min(workers, len(ordered)))) as pool:
-        return [r for r in pool.map(one, ordered) if r]
+        results = [r for r in pool.map(one, ordered) if r]
+    # Deflation needs the whole scan: the correction depends on how many names
+    # were tried and how spread out their Sharpes are.
+    return deflate(results)
+
+
+def deflate(results: list[dict]) -> list[dict]:
+    """Correct every Sharpe in a scan for the fact that we tried many names.
+
+    Picking the best of N candidates inflates the winner's track record: the
+    maximum of N noise draws grows roughly like sqrt(2*ln N). We measure how
+    spread out the Sharpes actually are across this scan, work out the best
+    score luck alone would produce over N trials, and ask each name to clear
+    *that* bar instead of zero. `dsr` is the resulting P(the edge is real).
+    """
+    from .sharpe_stats import deannualize, deflated_sharpe, verdict
+
+    scored = [r for r in results if r.get("sharpe") is not None and r.get("nObs", 0) > 2]
+    n_trials = max(len(scored), 1)
+    if len(scored) >= 2:
+        vals = [deannualize(r["sharpe"]) for r in scored]
+        mean = sum(vals) / len(vals)
+        variance = sum((v - mean) ** 2 for v in vals) / (len(vals) - 1)
+    else:
+        variance = 0.0
+
+    for r in results:
+        if r.get("sharpe") is None or r.get("nObs", 0) <= 2:
+            r["dsr"], r["edgeVerdict"] = None, None
+            continue
+        p = deflated_sharpe(deannualize(r["sharpe"]), r["nObs"], n_trials, variance,
+                            skew=r.get("skew", 0.0), kurtosis=r.get("kurtosis", 3.0))
+        r["dsr"] = round(p, 4)
+        r["edgeVerdict"] = verdict(p)
+        r["nTrials"] = n_trials
+    return results
 
 
 def rank(results: list[dict], *, top: int = 20, fresh_days: int = 0,
@@ -242,8 +287,9 @@ def rank(results: list[dict], *, top: int = 20, fresh_days: int = 0,
     if fresh_days and fresh_days > 0:
         out = [r for r in out if 0 < r.get("daysInRegime", 0) <= fresh_days]
     if proven_only:
-        out = [r for r in out
-               if (r.get("sharpe") or 0) > 0 and (r.get("winRate") or 0) > 0.5]
+        # "Proven" now means the edge survives the multiple-testing correction —
+        # a 95% chance it is real — not merely a positive-looking backtest.
+        out = [r for r in out if (r.get("dsr") or 0.0) >= 0.95]
 
     if sort == "fresh":
         out.sort(key=lambda r: (r.get("daysInRegime", 9999), -r["score"]))

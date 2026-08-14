@@ -7,6 +7,8 @@ solves for the stationary distribution, and runs a walk-forward backtest.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -42,14 +44,92 @@ def build_transition_matrix(labels: pd.Series, stride: int = 1) -> np.ndarray:
                          adjacent observations share no data. Statistically
                          honest, at the cost of ~window× fewer transitions.
     """
-    n = 3
-    counts = np.zeros((n, n), dtype=float)
-    arr = labels.to_numpy()[:: max(1, stride)]
-    for i in range(len(arr) - 1):
-        counts[arr[i], arr[i + 1]] += 1
+    counts = transition_counts(labels, stride)
     row_sums = counts.sum(axis=1, keepdims=True)
     row_sums[row_sums == 0] = 1.0  # avoid divide-by-zero on empty rows
     return counts / row_sums
+
+
+def transition_counts(labels: pd.Series, stride: int = 1) -> np.ndarray:
+    """Raw 3x3 transition counts — the evidence behind the probabilities.
+
+    Kept separate from the matrix itself because the counts are what tell you
+    whether a probability is trustworthy: honest (stride-sampled) estimates can
+    rest on very few observations, and a rate has no meaning without its n.
+    """
+    counts = np.zeros((3, 3), dtype=float)
+    arr = labels.to_numpy()[:: max(1, stride)]
+    for i in range(len(arr) - 1):
+        counts[arr[i], arr[i + 1]] += 1
+    return counts
+
+
+def wilson_interval(k: float, n: float, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval for a binomial proportion k/n.
+
+    Preferred over the textbook normal interval because it stays inside [0, 1]
+    and behaves sensibly for small n — which is exactly the regime we are in
+    once the labels are stride-sampled.
+    """
+    if n <= 0:
+        return 0.0, 1.0
+    p = k / n
+    denom = 1.0 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = (z / denom) * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return float(max(0.0, centre - half)), float(min(1.0, centre + half))
+
+
+def matrix_uncertainty(counts: np.ndarray, z: float = 1.96) -> dict:
+    """Confidence intervals for every cell of a transition matrix.
+
+    Returns per-row sample sizes and a 3x3 grid of (lo, hi) bounds, so the UI
+    can show '57.7% [41-73%], n=18' instead of a bare number that looks just as
+    solid as one backed by 200 observations.
+    """
+    counts = np.asarray(counts, dtype=float)
+    row_n = counts.sum(axis=1)
+    lo = np.zeros((3, 3))
+    hi = np.zeros((3, 3))
+    for i in range(3):
+        for j in range(3):
+            lo[i, j], hi[i, j] = wilson_interval(counts[i, j], row_n[i], z)
+    return {"n": row_n, "lo": lo, "hi": hi}
+
+
+def signal_confidence(counts: np.ndarray, state: int) -> dict:
+    """How much evidence stands behind the Bull-minus-Bear signal.
+
+    The signal is a difference of two proportions estimated from the *same*
+    multinomial row, so its variance is (p_bull + p_bear - (p_bull-p_bear)^2)/n.
+    Comparing the signal to that spread answers the only question that matters
+    before trading it: could this just be sampling noise?
+    """
+    counts = np.asarray(counts, dtype=float)
+    n = float(counts[state].sum())
+    if n <= 0:
+        return {"n": 0, "signal": 0.0, "stderr": None, "z": 0.0,
+                "confidence": 0.0, "reliable": False}
+    p_bear = counts[state, 0] / n
+    p_bull = counts[state, 2] / n
+    diff = p_bull - p_bear
+    var = (p_bull + p_bear - diff * diff) / n
+    stderr = float(np.sqrt(var)) if var > 0 else 0.0
+    if stderr <= 0:
+        z = 0.0
+    else:
+        z = diff / stderr
+    # Two-sided: how confident are we the sign is not an artefact of small n?
+    confidence = float(math.erf(abs(z) / math.sqrt(2.0)))
+    return {
+        "n": int(n),
+        "signal": float(diff),
+        "stderr": stderr,
+        "z": float(z),
+        "confidence": confidence,
+        "reliable": bool(confidence >= 0.95 and n >= 20),
+    }
+
 
 
 def stationary_distribution(P: np.ndarray) -> np.ndarray:
@@ -92,7 +172,8 @@ def walk_forward_backtest(
 
     if len(labels) < min_train + 30:
         return {"sharpe": float("nan"), "max_drawdown": float("nan"), "n_trades": 0,
-                "win_rate": float("nan"), "equity": [], "equity_index": []}
+                "win_rate": float("nan"), "equity": [], "equity_index": [],
+                "skew": 0.0, "kurtosis": 3.0, "n_obs": 0}
 
     # Incremental transition counts: refitting the matrix from scratch each day
     # is O(n^2); each step only adds ONE new transition, so carry the counts and
@@ -129,6 +210,16 @@ def walk_forward_backtest(
     acted = sr[sr != 0.0]  # only days the strategy took a position
     win_rate = float((acted > 0).mean()) if len(acted) else float("nan")
 
+    # Shape of the return distribution — needed to judge whether the Sharpe is
+    # believable. Fat tails and negative skew make the same Sharpe weaker.
+    sd = sr.std(ddof=1)
+    if len(sr) > 2 and sd > 0 and np.isfinite(sd):
+        z = (sr - sr.mean()) / sd
+        skew = float((z ** 3).mean())
+        kurt = float((z ** 4).mean())
+    else:
+        skew, kurt = 0.0, 3.0
+
     return {
         "sharpe": sharpe,
         "max_drawdown": max_dd,
@@ -136,6 +227,9 @@ def walk_forward_backtest(
         "win_rate": win_rate,
         "equity": equity.tolist(),
         "equity_index": [d.strftime("%Y-%m-%d") for d in equity_dates],
+        "skew": skew,
+        "kurtosis": kurt,
+        "n_obs": int(len(sr)),
     }
 
 

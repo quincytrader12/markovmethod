@@ -14,7 +14,16 @@ import pandas as pd
 
 from .engine import analyze2
 from .markov2 import Strategy
-from .regime import STATES, label_regimes, n_step_forecast, walk_forward_backtest
+from .regime import (
+    STATES,
+    label_regimes,
+    matrix_uncertainty,
+    n_step_forecast,
+    signal_confidence,
+    transition_counts,
+    walk_forward_backtest,
+)
+from .sharpe_stats import deannualize, probabilistic_sharpe, verdict
 
 _REGIME_KEY = {0: "bear", 1: "sideways", 2: "bull"}
 
@@ -188,10 +197,36 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
                          "l": r4(min(o, c) * 0.998), "c": r4(c), "up": bool(c >= o),
                          "regime": _REGIME_KEY[int(rg)]})
 
+    # How much evidence sits behind the honest matrix. Stride sampling makes the
+    # estimates truthful but sparse, so the counts and intervals are the only
+    # way to tell a well-supported probability from a near-guess.
+    counts = transition_counts(labels, stride=window)
+    unc = matrix_uncertainty(counts)
+    ci = {
+        "n": [int(v) for v in unc["n"]],
+        "lo": [[round(float(v), 4) for v in row] for row in unc["lo"]],
+        "hi": [[round(float(v), 4) for v in row] for row in unc["hi"]],
+        "thin": [bool(v < 20) for v in unc["n"]],
+    }
+    sc = signal_confidence(counts, snap.current_state)
+    sig_stats = {
+        "n": sc["n"],
+        "stderr": None if sc["stderr"] is None else round(sc["stderr"], 4),
+        "z": round(sc["z"], 2),
+        "confidence": round(sc["confidence"], 4),
+        "reliable": sc["reliable"],
+    }
+
     metrics = walk_forward_backtest(close, labels) if include_metrics else {
         "sharpe": float("nan"), "max_drawdown": float("nan"), "n_trades": 0,
         "win_rate": float("nan"), "equity": [], "equity_index": []}
     eq, eq_idx = _downsample(metrics.get("equity", []), metrics.get("equity_index", []))
+
+    psr = None
+    if not pd.isna(metrics.get("sharpe", float("nan"))) and metrics.get("n_obs", 0) > 2:
+        psr = round(probabilistic_sharpe(
+            deannualize(metrics["sharpe"]), metrics["n_obs"],
+            skew=metrics.get("skew", 0.0), kurtosis=metrics.get("kurtosis", 3.0)), 4)
 
     return {
         "ticker": ticker,
@@ -205,6 +240,8 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
         "signal": round(snap.signal, 4),
         "targetLabel": snap.target_label,
         "matrix": [[round(float(v), 4) for v in row] for row in snap.honest_matrix],
+        "matrixCI": ci,
+        "signalStats": sig_stats,
         "stationary": [round(float(v), 4) for v in snap.stationary],
         "states": STATES,
         "diagonalInflation": [round(float(v), 2) for v in snap.comparison.inflation],
@@ -226,5 +263,11 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
             "winRate": None if pd.isna(metrics.get("win_rate", float("nan"))) else round(metrics["win_rate"], 4),
             "equity": eq,
             "equityIndex": eq_idx,
+            # Is that Sharpe believable given the sample length and fat tails?
+            "psr": psr,
+            "psrVerdict": None if psr is None else verdict(psr),
+            "nObs": metrics.get("n_obs", 0),
+            "skew": round(float(metrics.get("skew", 0.0)), 3),
+            "kurtosis": round(float(metrics.get("kurtosis", 3.0)), 3),
         },
     }
