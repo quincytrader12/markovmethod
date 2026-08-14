@@ -184,6 +184,8 @@
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
   .bell-badge{background:var(--red); color:#fff; border-radius:9px; padding:0 5px; font-size:9px; margin-left:5px}
   .risk-row{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:4px 2px 12px}
+  .risk-row > *{flex:0 0 auto}
+  .risk-row .seg-sel{width:auto; min-width:104px; max-width:150px}
   .risk-row input{background:#08121c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
     padding:5px 8px; font-family:inherit; font-size:12px; width:120px}
   .kill-btn{background:rgba(255,77,94,.12); border:1px solid var(--red); color:var(--red); border-radius:4px;
@@ -1491,7 +1493,8 @@ async function delJournal(id){
 /* ---------- alerts + risk automation ---------- */
 let NOTIFY=false, SEEN=new Set(), BELL=0, HALTED=false;
 let LAST_ALERTS={priceAlerts:[], recent:[], lossLimit:null, dayPl:null, halted:false};
-function openAlerts(){ $('alrt-modal').classList.add('open'); renderAlerts(); loadAlerts(); loadTelegram(); BELL=0; updateBell(); }
+function openAlerts(){ $('alrt-modal').classList.add('open'); renderAlerts(); loadAlerts();
+  Promise.all([loadTelegram(), loadWatcher()]).then(renderAlerts); BELL=0; updateBell(); }
 function closeAlerts(){ $('alrt-modal').classList.remove('open'); }
 function updateBell(){ const b=$('bell-badge'); if(b){ b.textContent=BELL?BELL:''; b.className=BELL?'bell-badge':''; } }
 function beep(level){
@@ -1577,6 +1580,7 @@ function renderAlerts(){
 }
 /* ---- telegram ---- */
 let TG={configured:false, sendScans:true, sendFlips:true, minScore:70};
+let WATCH_CFG=null;
 async function loadTelegram(){
   try{ TG=await api('/api/telegram'); }catch(e){}
   if($('alrt-modal').classList.contains('open')) renderAlerts();
@@ -1601,7 +1605,56 @@ function renderTelegram(){
       '" onchange="saveTelegram()">'+
     '<button class="btn-x" onclick="testTelegram()">Send test</button>'+
     '<button class="btn-x" onclick="sendScanTelegram()">📤 Send picks now</button>'+
-    '<button class="btn-x" onclick="disconnectTelegram()">Disconnect</button></div>';
+    '<button class="btn-x" onclick="disconnectTelegram()">Disconnect</button></div>'+
+    renderWatcher();
+}
+function renderWatcher(){
+  const w=WATCH_CFG; if(!w) return '';
+  const when = w.lastRun ? new Date(w.lastRun*1000).toLocaleTimeString('en-GB') : 'never';
+  const next = w.nextRun ? new Date(w.nextRun*1000).toLocaleTimeString('en-GB') : '—';
+  return '<div class="risk-row" style="border-top:1px solid var(--edge);padding-top:8px">'+
+    '<label class="fchk"><input type="checkbox" id="w-on"'+(w.autoScan?' checked':'')+
+      ' onchange="saveWatcher()"><span title="Rescans the universe in the background and Telegrams names that newly clear your filters">🔎 Auto-hunt new prospects</span></label>'+
+    'every <input id="w-int" type="number" min="5" style="width:64px" value="'+w.scanIntervalMin+
+      '" onchange="saveWatcher()"> min'+
+    '<select class="seg-sel" id="w-uni" onchange="saveWatcher()" title="Which universe to hunt in">'+
+      ['market','midcap','sector','megacap','crypto'].map(u=>
+        `<option value="${u}"${w.scanUniverse===u?' selected':''}>${u}</option>`).join('')+
+    '</select>'+
+    '<label class="fchk"><input type="checkbox" id="w-fresh"'+(w.scanFreshDays?' checked':'')+
+      ' onchange="saveWatcher()"><span title="Only names ≤5 days into a new regime">fresh flips only</span></label>'+
+    'quiet <input id="w-qs" type="number" min="0" max="23" style="width:52px" value="'+w.quietStart+
+      '" onchange="saveWatcher()">–<input id="w-qe" type="number" min="0" max="23" style="width:52px" value="'+w.quietEnd+
+      '" onchange="saveWatcher()">'+
+    '<label class="fchk"><input type="checkbox" id="w-wd"'+(w.weekdaysOnly?' checked':'')+
+      ' onchange="saveWatcher()"><span>weekdays only</span></label>'+
+    '<button class="btn-x" onclick="runWatcherNow()">Run now</button>'+
+    '<span class="dim2" style="font-size:10px">last '+when+' · next '+next+
+      ' · '+w.trackedSymbols+' alerted</span></div>';
+}
+async function loadWatcher(){
+  try{ WATCH_CFG=await api('/api/watcher'); }catch(e){}
+}
+async function saveWatcher(){
+  const body={autoScan:$('w-on').checked, scanIntervalMin:Number($('w-int').value)||30,
+    scanUniverse:$('w-uni').value, scanFreshDays:$('w-fresh').checked?5:0,
+    quietStart:Number($('w-qs').value)||0, quietEnd:Number($('w-qe').value)||0,
+    weekdaysOnly:$('w-wd').checked};
+  try{ WATCH_CFG=await api('/api/watcher',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(body)});
+       log(WATCH_CFG.autoScan?'auto-hunt on — scanning every '+WATCH_CFG.scanIntervalMin+' min':'auto-hunt off','ok');
+       renderAlerts(); }
+  catch(e){ log('could not save: '+e.message,'err'); }
+}
+async function runWatcherNow(){
+  log('scanning for new prospects…','dim');
+  try{
+    const r=await api('/api/watcher/run',{method:'POST'});
+    log(r.sent? `sent ${r.sent} new prospect(s) to Telegram: ${r.new.join(', ')}`
+              : `${r.scanned} names clear your filters, none new since last alert`,
+        r.sent?'ok':'warn');
+    loadWatcher().then(renderAlerts);
+  }catch(e){ log('scan failed: '+e.message,'err'); }
 }
 async function connectTelegram(){
   const token=$('tg-token').value.trim();

@@ -155,6 +155,8 @@ class AppState:
         self.journal = JournalStore()
         self.alerts = AlertEngine()
         self.telegram = TelegramNotifier()
+        from .watcher import ScanWatcher
+        self.watcher = ScanWatcher(self)
         self.broker = None if demo else make_broker(settings)
         self._state_cache: dict[str, tuple[float, dict]] = {}
         self._regperf_cache: dict[str, tuple[float, dict]] = {}
@@ -676,6 +678,33 @@ def create_app(state: AppState):
             raise HTTPException(status_code=400, detail=str(exc))
         return {"ok": True, "sent": len(result["results"])}
 
+    # ── background scan watcher ──────────────────────────────────────────────
+    @app.get("/api/watcher")
+    def watcher_status():
+        return state.watcher.status()
+
+    @app.post("/api/watcher")
+    async def watcher_config(request: Request):
+        from .watcher import DEFAULTS
+        data = await request.json()
+        fields = {k: data[k] for k in DEFAULTS if k in data}
+        if "scanIntervalMin" in fields:
+            fields["scanIntervalMin"] = max(5, int(fields["scanIntervalMin"]))
+        state.telegram.save(**fields)
+        if state.watcher.config()["autoScan"]:
+            state.watcher.start()          # idempotent
+        return state.watcher.status()
+
+    @app.post("/api/watcher/run")
+    def watcher_run_now():
+        """Sweep immediately, ignoring quiet hours — for testing the setup."""
+        if not state.telegram.enabled:
+            raise HTTPException(status_code=400, detail="Connect Telegram first.")
+        try:
+            return state.watcher.run_once(force=True)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"scan failed: {exc}")
+
     @app.post("/api/alerts/price")
     async def add_price_alert(request: Request):
         data = await request.json()
@@ -1034,6 +1063,8 @@ def main() -> int:
     # dashboard, so their first ⚡ SCAN comes back instantly.
     state.prewarm("market", SCAN_UNIVERSE)
     state.prewarm_universe()   # Alpaca asset list, so search is instant from the first keystroke
+    if state.watcher.config()["autoScan"]:
+        state.watcher.start()  # keep hunting even with the page closed
 
     url = f"http://{args.host}:{args.port}/"
     print(f"Mamba Terminal web HUD → {url}  (Ctrl-C to stop)")
