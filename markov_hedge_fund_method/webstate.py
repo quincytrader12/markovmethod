@@ -23,6 +23,7 @@ from .regime import (
     transition_counts,
     walk_forward_backtest,
 )
+from .har import vol_forecast_for
 from .sharpe_stats import deannualize, probabilistic_sharpe, verdict
 
 _REGIME_KEY = {0: "bear", 1: "sideways", 2: "bull"}
@@ -239,10 +240,38 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
         "reliable": sc["reliable"],
     }
 
-    metrics = walk_forward_backtest(close, labels) if include_metrics else {
+    # Walk-forward volatility forecast — used only to size positions, never to
+    # change the signal. Falls back to close-to-close when no OHLC is present.
+    vol_fc = None
+    if include_metrics:
+        try:
+            vol_fc = vol_forecast_for(close, ohlc)
+        except Exception:  # noqa: BLE001 — sizing is optional, never fatal
+            vol_fc = None
+
+    metrics = walk_forward_backtest(close, labels, vol_forecast=vol_fc) if include_metrics else {
         "sharpe": float("nan"), "max_drawdown": float("nan"), "n_trades": 0,
         "win_rate": float("nan"), "equity": [], "equity_index": []}
     eq, eq_idx = _downsample(metrics.get("equity", []), metrics.get("equity_index", []))
+
+    vt_raw = metrics.get("vt")
+    vt_block = None
+    if vt_raw:
+        vt_eq, _ = _downsample(vt_raw.get("equity", []), vt_raw.get("equity_index", []))
+        vt_block = {
+            "sharpe": None if pd.isna(vt_raw["sharpe"]) else round(vt_raw["sharpe"], 3),
+            "maxDrawdown": None if pd.isna(vt_raw["max_drawdown"]) else round(vt_raw["max_drawdown"], 4),
+            "winRate": None if pd.isna(vt_raw["win_rate"]) else round(vt_raw["win_rate"], 4),
+            "equity": vt_eq,
+            "avgLeverage": None if pd.isna(vt_raw["avg_leverage"]) else round(vt_raw["avg_leverage"], 2),
+            "targetVol": vt_raw["target_vol"],
+            "leverageCap": vt_raw["leverage_cap"],
+        }
+
+    # Today's forecast for tomorrow's volatility, annualised.
+    vol_now = None
+    if vol_fc is not None and len(vol_fc):
+        vol_now = round(float(vol_fc.iloc[-1]), 4)
 
     psr = None
     if not pd.isna(metrics.get("sharpe", float("nan"))) and metrics.get("n_obs", 0) > 2:
@@ -296,5 +325,8 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
             "nObs": metrics.get("n_obs", 0),
             "skew": round(float(metrics.get("skew", 0.0)), 3),
             "kurtosis": round(float(metrics.get("kurtosis", 3.0)), 3),
+            # Vol-targeted variant, shown next to the plain curve for comparison
+            "vt": vt_block,
         },
+        "volForecast": vol_now,
     }

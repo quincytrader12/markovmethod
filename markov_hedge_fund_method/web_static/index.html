@@ -260,6 +260,12 @@
   .r-sideways{color:var(--dim); border:1px solid var(--edge); background:#0a151f}
   .r-loading{color:var(--cyan2); border:1px solid var(--edge); background:#0a151f; animation:pulse 1.1s infinite}
   .plain{color:var(--ink); font-size:12px; line-height:1.4; letter-spacing:.2px}
+  .vtline{font-size:10px; color:var(--dim); letter-spacing:.3px; margin:2px 0 5px; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis}
+  .vtline b{color:var(--ink); font-family:var(--mono)}
+  .vtline .dim2{color:var(--dim2)}
+  .vtline .sw{display:inline-block; width:12px; height:2px; margin:0 4px 3px 0; vertical-align:middle}
+  .vtline .sw.dash{background:none!important; border-top:2px dashed var(--amber); height:0; margin-left:8px}
   .plain .dot{display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px;
     vertical-align:middle; box-shadow:var(--glow) currentColor}
   .tech{color:var(--dim2); font-size:10px; letter-spacing:.3px; margin-top:2px; font-family:var(--mono)}
@@ -500,6 +506,7 @@
         <div class="panel">
           <h2>Walk-forward <span class="tag">no-lookahead backtest</span></h2>
           <canvas id="equity" class="equity" width="760" height="150"></canvas>
+          <div class="vtline" id="vt-line"></div>
           <div class="stat-row">
             <div class="stat"><div class="v" id="wf-sharpe">—</div><div class="k">sharpe</div></div>
             <div class="stat"><div class="v" id="wf-win">—</div><div class="k">win rate</div></div>
@@ -584,7 +591,7 @@
 </div>
 
 <script>
-const C = { bull:'#2fe08a', bear:'#ff4d5e', sideways:'#7f9bb3', cyan:'#38f0e0', dim:'#3d5a72', grid:'#12283a', ink:'#cfe8ff' };
+const C = { bull:'#2fe08a', bear:'#ff4d5e', sideways:'#7f9bb3', cyan:'#38f0e0', dim:'#3d5a72', grid:'#12283a', ink:'#cfe8ff', amber:'#f5c451' };
 let SYMBOL = 'SPY';
 let SIDE = 'buy';
 let CFG = {};
@@ -874,7 +881,8 @@ function fillMax(){
 /* ---------- extra widgets: stationary, timeline, walk-forward, forecast ---------- */
 function renderExtras(st){
   drawDonut(st.stationary); renderStatLegend(st.stationary); renderTimeline(st.regimeTimeline);
-  drawEquity(st.metrics.equity);
+  drawEquity(st.metrics.equity, st.metrics.vt ? st.metrics.vt.equity : null);
+  renderVT(st);
   $('wf-sharpe').textContent = st.metrics.sharpe==null?'—':fmt(st.metrics.sharpe,2);
   $('wf-sharpe').style.color = (st.metrics.sharpe||0)>=0?C.bull:C.bear;
   // A Sharpe means little without knowing how much data stands behind it.
@@ -917,11 +925,13 @@ function renderTimeline(tl){
     h+=`<div class="flip"><span class="d">${f.date}</span> ${f.from} → <b style="color:${C[f.to]}">${f.to}</b></div>`; });
   el.innerHTML=h;
 }
-function drawEquity(eq){
+function drawEquity(eq, vt){
   const {ctx,w,h}=chartCtx('equity'); ctx.clearRect(0,0,w,h);
   if(!eq||eq.length<2){ ctx.fillStyle=C.dim; ctx.font='11px monospace'; ctx.fillText('insufficient history for backtest', 8, h/2); return; }
   const pad={l:4,r:42,t:6,b:6};
-  let lo=Math.min(...eq), hi=Math.max(...eq); const s=(hi-lo)||1; lo-=s*.05; hi+=s*.05;
+  // Both curves share one scale so the comparison is honest.
+  const all = (vt && vt.length===eq.length) ? eq.concat(vt) : eq;
+  let lo=Math.min(...all), hi=Math.max(...all); const s=(hi-lo)||1; lo-=s*.05; hi+=s*.05;
   const X=i=>pad.l+(w-pad.l-pad.r)*(i/(eq.length-1)); const Y=v=>pad.t+(h-pad.t-pad.b)*(1-(v-lo)/(hi-lo));
   ctx.strokeStyle=C.grid; ctx.beginPath(); const y1=Y(1); ctx.moveTo(pad.l,y1); ctx.lineTo(w-pad.r,y1); ctx.stroke();
   const grad=ctx.createLinearGradient(0,pad.t,0,h-pad.b); grad.addColorStop(0,'rgba(47,224,138,.22)'); grad.addColorStop(1,'rgba(47,224,138,0)');
@@ -930,6 +940,33 @@ function drawEquity(eq){
   const col = eq[eq.length-1]>=1?C.bull:C.bear;
   line(ctx, eq, X, Y, col, 1.6);
   ctx.fillStyle=col; ctx.font='11px monospace'; ctx.textAlign='left'; ctx.fillText(eq[eq.length-1].toFixed(2)+'x', w-40, Y(eq[eq.length-1])+4);
+  if(vt && vt.length===eq.length){
+    ctx.save(); ctx.setLineDash([4,3]);
+    line(ctx, vt, X, Y, C.amber, 1.4);
+    ctx.restore();
+    ctx.fillStyle=C.amber; ctx.fillText(vt[vt.length-1].toFixed(2)+'x', w-40, Y(vt[vt.length-1])+4);
+  }
+}
+function renderVT(st){
+  const el=$('vt-line'); if(!el) return;
+  const vt=st.metrics.vt, vol=st.volForecast;
+  if(!vt){ el.innerHTML = vol==null?'' :
+    `<span class="sw" style="background:${C.bull}"></span>unscaled &nbsp;·&nbsp; forecast vol <b>${(vol*100).toFixed(1)}%</b>`;
+    return; }
+  const d=(vt.sharpe!=null && st.metrics.sharpe!=null) ? vt.sharpe-st.metrics.sharpe : null;
+  const dd=(vt.maxDrawdown!=null && st.metrics.maxDrawdown!=null)
+    ? (Math.abs(st.metrics.maxDrawdown)-Math.abs(vt.maxDrawdown))*100 : null;
+  const sgn=v=>(v>=0?'+':'')+v.toFixed(2);
+  el.innerHTML =
+    `<span class="sw" style="background:${C.bull}"></span>unscaled `+
+    `<span class="sw dash" style="background:${C.amber}"></span>`+
+    `<span title="Position size scaled by ${(vt.targetVol*100).toFixed(0)}% target vol ÷ forecast vol, capped at ${vt.leverageCap}x">vol-targeted</span> `+
+    `sharpe <b style="color:${d>=0?C.bull:C.bear}">${vt.sharpe==null?'—':vt.sharpe.toFixed(2)}</b>`+
+    (d==null?'':` <span class="dim2">(${sgn(d)})</span>`)+
+    ` · maxDD <b style="color:${dd>=0?C.bull:C.bear}">${vt.maxDrawdown==null?'—':(vt.maxDrawdown*100).toFixed(1)+'%'}</b>`+
+    (dd==null?'':` <span class="dim2">(${dd>=0?'−':'+'}${Math.abs(dd).toFixed(1)}pp)</span>`)+
+    ` · avg lev <b>${vt.avgLeverage==null?'—':vt.avgLeverage.toFixed(2)}x</b>`+
+    (vol==null?'':` · σ̂ <b>${(vol*100).toFixed(1)}%</b>`);
 }
 function renderForecast(fc){
   const el=$('forecast'); if(!fc){ el.innerHTML=''; return; }

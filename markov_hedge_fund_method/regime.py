@@ -159,6 +159,9 @@ def walk_forward_backtest(
     close: pd.Series,
     labels: pd.Series,
     min_train: int = 252,
+    vol_forecast: pd.Series | None = None,
+    target_vol: float = 0.15,
+    leverage_cap: float = 2.0,
 ) -> dict:
     """Walk-forward: at each day t, fit the matrix on labels up to t-1,
     derive the signal from the current state, hold for one day, score.
@@ -184,7 +187,16 @@ def walk_forward_backtest(
     for i in range(min_train - 1):
         counts[lab[i], lab[i + 1]] += 1.0
 
+    # Optional vol targeting: same signal and same direction, but the *size*
+    # shrinks when tomorrow's volatility is forecast high. Aligned by date so a
+    # forecast is only ever used on the day it was made for.
+    vf = None
+    if vol_forecast is not None and len(vol_forecast):
+        vf = vol_forecast.reindex(labels.index).to_numpy(dtype=float)
+
     strategy_returns = []
+    vt_returns = []
+    leverages = []
     equity_dates = []
     for t in range(min_train, len(lab) - 1):
         if t > min_train:                      # extend the window by one transition
@@ -193,7 +205,15 @@ def walk_forward_backtest(
         total = row.sum()
         signal = float((row[2] - row[0]) / total) if total else 0.0
         position = float(np.sign(signal))      # +1 / 0 / -1 — simple sign
-        strategy_returns.append(position * float(rets[t + 1]))
+        r_next = float(rets[t + 1])
+        strategy_returns.append(position * r_next)
+        if vf is not None:
+            sigma = vf[t + 1]
+            scale = 1.0
+            if np.isfinite(sigma) and sigma > 0:
+                scale = min(target_vol / sigma, leverage_cap)
+            leverages.append(scale)
+            vt_returns.append(position * scale * r_next)
         equity_dates.append(labels.index[t + 1])
 
     sr = np.array(strategy_returns, dtype=float)
@@ -220,7 +240,7 @@ def walk_forward_backtest(
     else:
         skew, kurt = 0.0, 3.0
 
-    return {
+    out = {
         "sharpe": sharpe,
         "max_drawdown": max_dd,
         "n_trades": int(len(sr)),
@@ -231,6 +251,28 @@ def walk_forward_backtest(
         "kurtosis": kurt,
         "n_obs": int(len(sr)),
     }
+
+    # Vol-targeted variant, reported alongside rather than replacing anything —
+    # the point is to be able to compare the two curves on your own data.
+    if vt_returns:
+        vt = np.array(vt_returns, dtype=float)
+        vt_sd = vt.std(ddof=1)
+        vt_equity = (1.0 + vt).cumprod()
+        vt_run_max = np.maximum.accumulate(vt_equity)
+        vt_dd = (vt_equity - vt_run_max) / vt_run_max
+        vt_acted = vt[vt != 0.0]
+        out["vt"] = {
+            "sharpe": (float(vt.mean() / vt_sd * np.sqrt(252))
+                       if vt_sd > 0 and np.isfinite(vt_sd) else float("nan")),
+            "max_drawdown": float(vt_dd.min()) if len(vt_dd) else float("nan"),
+            "win_rate": float((vt_acted > 0).mean()) if len(vt_acted) else float("nan"),
+            "equity": vt_equity.tolist(),
+            "equity_index": out["equity_index"],
+            "avg_leverage": float(np.mean(leverages)) if leverages else float("nan"),
+            "target_vol": float(target_vol),
+            "leverage_cap": float(leverage_cap),
+        }
+    return out
 
 
 _REGIME_NAMES = {0: "bear", 1: "sideways", 2: "bull"}
