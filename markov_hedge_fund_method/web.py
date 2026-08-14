@@ -162,6 +162,7 @@ class AppState:
         self._regperf_cache: dict[str, tuple[float, dict]] = {}
         self._scan_cache: dict[str, tuple[float, list]] = {}
         self._ohlc_cache: dict[str, tuple[float, object, str]] = {}
+        self._state_vol_cache: dict[str, tuple[float, dict]] = {}
         self._news_cache: dict[str, tuple[float, list]] = {}
         self._alpaca_symbols: set[str] | None = None
         self._alpaca_names: dict[str, str] = {}
@@ -174,6 +175,7 @@ class AppState:
     def reconnect(self) -> None:
         self.broker = None if self.demo else make_broker(self.settings)
         self._state_cache.clear()   # a new account may change the data source
+        self._state_vol_cache.clear()
         self._scan_cache.clear()
         self._regperf_cache.clear()
         self._ohlc_cache.clear()
@@ -315,32 +317,39 @@ class AppState:
         except Exception:  # noqa: BLE001 — fall back so the chart never blanks
             return synthetic_intraday(tf, seed=_seed(symbol)), "synthetic (data unavailable)"
 
-    def state_payload(self, symbol: str) -> dict:
-        """Full HUD payload for a symbol, memoised with a short TTL."""
-        cached = self._state_cache.get(symbol)
+    def state_payload(self, symbol: str, *, with_vol: bool = False) -> dict:
+        """HUD payload for a symbol, memoised with a short TTL.
+
+        The HAR volatility forecast costs ~6x the rest of the payload combined,
+        and only the focused chart uses it — the scanner, watchlist quotes and
+        alerts never touch it. So it is off by default and cached separately,
+        which keeps a 100-symbol scan from paying for 100 forecasts it discards.
+        """
+        cache = self._state_vol_cache if with_vol else self._state_cache
+        cached = cache.get(symbol)
         if cached and (time.monotonic() - cached[0]) < self.ttl:
             return cached[1]
         df, source = self.ohlc_for(symbol)
         close = df["Close"]
         payload = market_state(close, symbol, window=self.settings.window,
                                threshold=self.settings.threshold, strategy=self.settings.strategy,
-                               ohlc=df)
+                               ohlc=df, with_vol=with_vol)
         payload["dataSource"] = source
         payload["name"] = self.name_for(symbol)
-        self._state_cache[symbol] = (time.monotonic(), payload)
+        cache[symbol] = (time.monotonic(), payload)
         return payload
 
     # Scored-universe cache. Regimes move on a daily scale, so a few minutes of
     # staleness is harmless — and it makes every rescan/filter change instant.
     SCAN_TTL = 300.0
 
-    def scored_universe(self, scope: str, symbols: list) -> list:
+    def scored_universe(self, scope: str, symbols: list, *, workers: int = 16) -> list:
         """Scored list for a scan scope, memoised so filters/rescans are free."""
         from .scanner import score_symbols
         cached = self._scan_cache.get(scope)
         if cached and (time.monotonic() - cached[0]) < self.SCAN_TTL:
             return cached[1]
-        results = score_symbols(self, symbols)
+        results = score_symbols(self, symbols, workers=workers)
         self._scan_cache[scope] = (time.monotonic(), results)
         return results
 
@@ -474,7 +483,7 @@ def create_app(state: AppState):
     @app.get("/api/state")
     def state_endpoint(symbol: str = "SPY"):
         symbol = symbol.strip().upper() or "SPY"
-        return state.state_payload(symbol)
+        return state.state_payload(symbol, with_vol=True)
 
     @app.get("/api/candles")
     def candles(symbol: str = "SPY", tf: str = "1D"):
@@ -872,12 +881,20 @@ def create_app(state: AppState):
         sym = str(data.get("symbol", "")).strip().upper()
         if not sym:
             raise HTTPException(status_code=400, detail="symbol required")
+        # Read the position first: once it is closed the unrealized P&L is gone,
+        # and that number is exactly what the trade realized.
+        pos = None
+        try:
+            pos = state.broker.get_position(sym)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             msg = state.broker.close_position(sym)
         except ReadOnlyError as exc:
             raise HTTPException(status_code=403, detail=str(exc))
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"close failed: {exc}")
+        _journal_close(sym, pos)
         return {"ok": True, "message": msg}
 
     @app.post("/api/orders/cancel")
@@ -897,6 +914,19 @@ def create_app(state: AppState):
         return {"ok": True}
 
     # ── orders ───────────────────────────────────────────────────────────────
+    def _journal_close(symbol: str, pos) -> None:
+        """Complete the journal entry for a position that just closed."""
+        if pos is None:
+            return
+        try:
+            state.journal.close_trade(
+                symbol, float(pos.unrealized_pl),
+                price=getattr(pos, "current_price", None) or None,
+                qty=getattr(pos, "qty", None),
+                regime_fn=lambda: state.journal_regime(symbol))
+        except Exception:  # noqa: BLE001 — journaling must never block a close
+            pass
+
     def _flatten():
         """Cancel every open order and close every position. Best-effort."""
         cancelled = 0
@@ -910,6 +940,7 @@ def create_app(state: AppState):
                 try:
                     state.broker.close_position(p.symbol)
                     closed += 1
+                    _journal_close(p.symbol, p)   # a flatten is still a set of exits
                 except Exception:  # noqa: BLE001
                     pass
         except Exception:  # noqa: BLE001

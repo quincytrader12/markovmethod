@@ -124,7 +124,9 @@ class ScanWatcher:
         scope = cfg["scanUniverse"]
         syms = SCAN_GROUPS.get(scope, SCAN_UNIVERSE)
         key = scope if scope in SCAN_GROUPS else "market"
-        scored = self.state.scored_universe(key, syms)
+        # Few workers on purpose: this runs unattended in the background and
+        # must never make the UI feel sluggish while the user is trading.
+        scored = self.state.scored_universe(key, syms, workers=3)
         result = rank(scored, top=50, fresh_days=int(cfg["scanFreshDays"]),
                       proven_only=False, sort="score")
         return [r for r in result["results"]

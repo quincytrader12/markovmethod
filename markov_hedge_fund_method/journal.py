@@ -88,6 +88,45 @@ class JournalStore:
                 return e
         return None
 
+    def open_entry_for(self, symbol: str) -> dict | None:
+        """The most recent entry for `symbol` that has no realized P&L yet."""
+        symbol = str(symbol).upper()
+        for e in self.list():                    # newest first
+            if e.get("symbol") == symbol and e.get("pnl") is None:
+                return e
+        return None
+
+    def close_trade(self, symbol: str, pnl: float, *, price=None,
+                    qty=None, regime_fn=None) -> dict:
+        """Record the exit of a position, filling in what it actually made.
+
+        Prefers to complete the entry that opened the trade — that is what makes
+        the by-regime analytics work, since the regime is recorded at entry, not
+        exit. Falls back to a standalone row when no opening entry is found (a
+        position opened outside the terminal, say).
+
+        `regime_fn` is a callable, not a value, so the regime is only looked up
+        in that fallback case — the common path must not pay for a lookup whose
+        answer it would discard.
+        """
+        existing = self.open_entry_for(symbol)
+        if existing is not None:
+            note = (existing.get("notes") or "").strip()
+            closed_note = f"closed @ {price}" if price is not None else "closed"
+            updated = self.update(existing["id"], pnl=float(pnl),
+                                  notes=(note + " · " if note else "") + closed_note)
+            if updated is not None:
+                return updated
+        regime = ""
+        if regime_fn is not None:
+            try:
+                regime = regime_fn() or ""
+            except Exception:  # noqa: BLE001
+                regime = ""
+        return self.add(symbol=symbol, side="close", qty=qty, price=price,
+                        regime=regime, notes="closed (no matching entry)",
+                        pnl=float(pnl), source="close")
+
     def remove(self, entry_id: str) -> bool:
         entries = self._read()
         kept = [e for e in entries if e.get("id") != entry_id]

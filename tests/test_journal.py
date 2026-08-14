@@ -104,3 +104,94 @@ def test_index_has_journal_ui(tmp_path):
     html = client.get("/").text
     assert "Trading Journal" in html and "openJournal" in html
     assert "/api/journal" in html and "performance by regime" in html.lower()
+
+
+# ── automatic logging of the full trade lifecycle ────────────────────────────
+class _Pos:
+    def __init__(self, symbol, qty, pnl, price):
+        self.symbol, self.qty = symbol, qty
+        self.unrealized_pl, self.current_price = pnl, price
+        self.market_value, self.side = qty * price, "long"
+
+
+class LifecycleBroker:
+    """Opens via submit_ticket, holds one position, closes on request."""
+    def __init__(self):
+        self.position = _Pos("AAPL", 10, 250.0, 190.0)
+        self.closed = []
+
+    def submit_ticket(self, ticket):
+        build_order_request(ticket)
+        return OrderResult(id="o1", status="accepted", summary="ok")
+
+    def get_position(self, symbol):
+        return self.position if self.position and self.position.symbol == symbol else None
+
+    def list_positions(self):
+        return [self.position] if self.position else []
+
+    def close_position(self, symbol):
+        self.closed.append(symbol); self.position = None
+        return "closing"
+
+    def cancel_all_orders(self):
+        return 0
+
+
+def _paper_with_journal(tmp_path):
+    state = AppState(Settings(ticker="SPY", mode=Mode.PAPER), demo=False)
+    state.broker = LifecycleBroker()
+    state.journal = JournalStore(config_dir=str(tmp_path))
+    return state, TestClient(create_app(state))
+
+
+def test_closing_a_position_completes_the_opening_entry(tmp_path):
+    state, client = _paper_with_journal(tmp_path)
+
+    client.post("/api/orders", json={"symbol": "AAPL", "order_type": "market",
+                                     "side": "buy", "qty": 10})
+    entries = client.get("/api/journal").json()["entries"]
+    assert len(entries) == 1 and entries[0]["pnl"] is None      # open, no P&L yet
+    regime_at_entry = entries[0]["regime"]
+
+    client.post("/api/positions/close", json={"symbol": "AAPL"})
+    entries = client.get("/api/journal").json()["entries"]
+    assert len(entries) == 1, "the exit should complete the entry, not duplicate it"
+    assert entries[0]["pnl"] == 250.0                            # realized, captured
+    assert entries[0]["regime"] == regime_at_entry               # regime at ENTRY kept
+    assert "closed" in entries[0]["notes"]
+
+
+def test_analytics_populate_without_any_manual_input(tmp_path):
+    state, client = _paper_with_journal(tmp_path)
+    client.post("/api/orders", json={"symbol": "AAPL", "order_type": "market",
+                                     "side": "buy", "qty": 10})
+    client.post("/api/positions/close", json={"symbol": "AAPL"})
+    a = client.get("/api/journal").json()["analytics"]
+    assert a["totals"]["closed"] == 1 and a["totals"]["pnl"] == 250.0
+    assert a["totals"]["winRate"] == 1.0
+
+
+def test_kill_switch_flatten_is_journaled(tmp_path):
+    state, client = _paper_with_journal(tmp_path)
+    client.post("/api/orders", json={"symbol": "AAPL", "order_type": "market",
+                                     "side": "buy", "qty": 10})
+    client.post("/api/kill")
+    entries = client.get("/api/journal").json()["entries"]
+    assert entries[0]["pnl"] == 250.0, "a flatten is still an exit and must be recorded"
+
+
+def test_close_without_an_opening_entry_still_records(tmp_path):
+    state, client = _paper_with_journal(tmp_path)
+    client.post("/api/positions/close", json={"symbol": "AAPL"})   # never opened here
+    entries = client.get("/api/journal").json()["entries"]
+    assert len(entries) == 1
+    assert entries[0]["pnl"] == 250.0 and entries[0]["source"] == "close"
+
+
+def test_open_entry_matching_picks_the_newest_unclosed(tmp_path):
+    js = JournalStore(config_dir=str(tmp_path))
+    js.add(symbol="MSFT", side="buy", pnl=10.0)      # already closed
+    older = js.add(symbol="MSFT", side="buy")        # still open
+    assert js.open_entry_for("MSFT")["id"] == older["id"]
+    assert js.open_entry_for("NOPE") is None

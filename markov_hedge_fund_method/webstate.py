@@ -181,7 +181,8 @@ def quote_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: f
 
 def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: float = 0.02,
                  strategy: Strategy = Strategy.FILTER, tail: int = 520,
-                 include_metrics: bool = True, ohlc: pd.DataFrame | None = None) -> dict:
+                 include_metrics: bool = True, ohlc: pd.DataFrame | None = None,
+                 with_vol: bool = True) -> dict:
     """Full HUD payload for one symbol from its close series.
 
     `tail` is how many recent bars of chart series to send — large enough that
@@ -243,7 +244,7 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
     # Walk-forward volatility forecast — used only to size positions, never to
     # change the signal. Falls back to close-to-close when no OHLC is present.
     vol_fc = None
-    if include_metrics:
+    if include_metrics and with_vol:
         try:
             vol_fc = vol_forecast_for(close, ohlc)
         except Exception:  # noqa: BLE001 — sizing is optional, never fatal
