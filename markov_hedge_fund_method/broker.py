@@ -222,14 +222,49 @@ class AlpacaBroker:
             )
         self.client.cancel_order_by_id(order_id)
 
-    def close_position(self, symbol: str) -> str:
-        """Liquidate the whole position in `symbol` at market."""
+    def close_position(self, symbol: str, *, cancel_first: bool = True) -> dict:
+        """Submit a market order to liquidate the whole position in `symbol`.
+
+        Two things this has to be honest about:
+
+        * Shares reserved by a working order cannot be liquidated — Alpaca
+          rejects the close with "insufficient qty available for order". So any
+          open order on the symbol is cancelled first, which is the usual reason
+          a close appears to fail on the first attempt.
+        * `close_position` submits an ORDER; it does not settle instantly. When
+          the market is shut the order simply queues. Callers get the order id
+          and status back so they can say that plainly instead of claiming the
+          position is closed.
+        """
         if not self.settings.can_trade:
             raise ReadOnlyError(
                 f"Mode is {self.settings.mode.value.upper()} — closing positions is disabled."
             )
-        self.client.close_position(symbol)
-        return f"closing {symbol}"
+        cancelled = 0
+        if cancel_first:
+            try:
+                for o in self.list_open_orders():
+                    if str(o.symbol).upper() == symbol.upper():
+                        self.cancel_order(o.id)
+                        cancelled += 1
+            except Exception:  # noqa: BLE001 — a failed cancel must not stop the close
+                pass
+        order = self.client.close_position(symbol)
+        return {
+            "symbol": symbol,
+            "orderId": str(getattr(order, "id", "")),
+            "status": str(getattr(getattr(order, "status", ""), "value",
+                                  getattr(order, "status", ""))),
+            "qty": str(getattr(order, "qty", "") or ""),
+            "cancelledOrders": cancelled,
+        }
+
+    def position_qty(self, symbol: str) -> float:
+        """Signed size held right now — 0.0 when flat. Used to verify a close."""
+        p = self.get_position(symbol)
+        if p is None:
+            return 0.0
+        return float(p.qty) if p.side != "short" else -float(p.qty)
 
     # ── asset universe (for search + validation) ────────────────────────────
     def get_asset(self, symbol: str) -> dict | None:

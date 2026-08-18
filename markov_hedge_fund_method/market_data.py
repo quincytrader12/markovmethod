@@ -187,8 +187,21 @@ def _alpaca_intraday(ticker: str, tf: str, api_key: str, api_secret: str) -> pd.
         from alpaca.data.requests import StockBarsRequest
 
         client = StockHistoricalDataClient(api_key, api_secret)
-        bars = client.get_stock_bars(
-            StockBarsRequest(symbol_or_symbols=ticker, timeframe=frame, start=start)).df
+        # Free and paper plans are not entitled to SIP, and cannot query the most
+        # recent 15 minutes of it either — both surface as an opaque failure. Ask
+        # for the default feed, then fall back to IEX, which every plan can read.
+        end = (pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=16)).to_pydatetime()
+        try:
+            bars = client.get_stock_bars(StockBarsRequest(
+                symbol_or_symbols=ticker, timeframe=frame, start=start)).df
+            if bars is None or bars.empty:
+                raise ValueError("no bars returned")
+        except Exception:  # noqa: BLE001 — retry on the feed every account has
+            from alpaca.data.enums import DataFeed
+
+            bars = client.get_stock_bars(StockBarsRequest(
+                symbol_or_symbols=ticker, timeframe=frame, start=start, end=end,
+                feed=DataFeed.IEX)).df
         key = ticker
 
     if isinstance(bars.index, pd.MultiIndex):
@@ -200,7 +213,27 @@ def _alpaca_intraday(ticker: str, tf: str, api_key: str, api_secret: str) -> pd.
 
 
 def get_intraday_ohlc(settings, tf: str) -> pd.DataFrame:
-    """Intraday OHLC (1H/4H/5-min for 1D/30-min for 1W) — Alpaca if keys, else yfinance."""
+    """Intraday OHLC (1H/4H/5-min for 1D/30-min for 1W).
+
+    Tries Alpaca when credentials exist, then yfinance. Intraday feeds fail for
+    plenty of mundane reasons — plan entitlements, a symbol with no intraday
+    history, a quiet session — so one source going down should not blank the
+    chart. Raises with both reasons only when neither source can deliver.
+    """
+    errors = []
     if settings.has_credentials:
-        return _alpaca_intraday(settings.ticker, tf, settings.api_key, settings.api_secret)
-    return _yfinance_intraday(settings.ticker, tf)
+        try:
+            df = _alpaca_intraday(settings.ticker, tf, settings.api_key, settings.api_secret)
+            if df is not None and not df.empty:
+                return df
+            errors.append("Alpaca returned no bars")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Alpaca: {exc}")
+    try:
+        df = _yfinance_intraday(settings.ticker, tf)
+        if df is not None and not df.empty:
+            return df
+        errors.append("Yahoo returned no bars")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"Yahoo: {exc}")
+    raise RuntimeError("; ".join(errors) or "no intraday data available")

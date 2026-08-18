@@ -802,7 +802,16 @@ async function loadIntraday(){
   const card = document.querySelector('.chartcard'); if(card) card.classList.add('loading');
   try{
     const d = await api('/api/candles?symbol='+encodeURIComponent(sym)+'&tf='+tf);
-    if(TF === tf && SYMBOL === sym){ INTRADAY = d; renderChart(); }
+    if(TF === tf && SYMBOL === sym){
+      INTRADAY = d; renderChart();
+      // Placeholder candles must not pass for the real thing — say why, once.
+      const src = d.source || '';
+      if(src.startsWith('synthetic') && !CFG.demo){
+        $('chip-source').classList.add('src-warn');
+        $('v-source').textContent = 'NO INTRADAY';
+        log(sym+' '+tf+' — '+src.replace(/^synthetic \(|\)$/g,''), 'err');
+      }
+    }
   }catch(e){ log('intraday load failed: '+e.message,'err'); }
   if(card) card.classList.remove('loading');
 }
@@ -1379,10 +1388,15 @@ async function loadBlotter(){
 }
 async function closePos(sym){
   if(!confirm('Close the entire '+sym+' position at market?')) return;
-  try{ await api('/api/positions/close',{method:'POST',headers:{'Content-Type':'application/json'},
+  try{
+    const r=await api('/api/positions/close',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({symbol:sym})});
-       log('closing '+sym+' at market','ok'); loadBlotter(); loadPortfolio(); }
-  catch(e){ log('close failed: '+e.message,'err'); }
+    // Report what the broker actually did: filled, or queued until the open.
+    log(r.message, r.flat?'ok':'warn');
+    loadBlotter(); loadPortfolio();
+    // A queued close fills later — re-check so the blotter is not left stale.
+    if(!r.flat) setTimeout(()=>{ loadBlotter(); loadPortfolio(); }, 4000);
+  }catch(e){ log('close failed: '+e.message,'err'); }
 }
 async function cancelOrd(id){
   try{ await api('/api/orders/cancel',{method:'POST',headers:{'Content-Type':'application/json'},

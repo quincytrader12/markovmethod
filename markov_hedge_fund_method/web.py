@@ -314,8 +314,10 @@ class AppState:
             return synthetic_intraday(tf, seed=_seed(symbol)), "synthetic (demo)"
         try:
             return get_intraday_ohlc(replace(self.settings, ticker=symbol), tf), "live"
-        except Exception:  # noqa: BLE001 — fall back so the chart never blanks
-            return synthetic_intraday(tf, seed=_seed(symbol)), "synthetic (data unavailable)"
+        except Exception as exc:  # noqa: BLE001 — fall back so the chart never blanks
+            # Carry the reason: "failed to fetch" alone leaves nothing to act on.
+            return (synthetic_intraday(tf, seed=_seed(symbol)),
+                    f"synthetic (intraday unavailable — {exc})")
 
     def state_payload(self, symbol: str, *, with_vol: bool = False) -> dict:
         """HUD payload for a symbol, memoised with a short TTL.
@@ -889,13 +891,13 @@ def create_app(state: AppState):
         except Exception:  # noqa: BLE001
             pass
         try:
-            msg = state.broker.close_position(sym)
+            res = state.broker.close_position(sym)
         except ReadOnlyError as exc:
             raise HTTPException(status_code=403, detail=str(exc))
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"close failed: {exc}")
+        except Exception as exc:  # noqa: BLE001 — surface Alpaca's own wording
+            raise HTTPException(status_code=502, detail=f"{sym} close rejected: {exc}")
         _journal_close(sym, pos)
-        return {"ok": True, "message": msg}
+        return _close_result(sym, res)
 
     @app.post("/api/orders/cancel")
     async def cancel_one_order(request: Request):
@@ -914,6 +916,35 @@ def create_app(state: AppState):
         return {"ok": True}
 
     # ── orders ───────────────────────────────────────────────────────────────
+    def _close_result(symbol: str, res) -> dict:
+        """Say what actually happened, not what we hoped happened.
+
+        A close is an order. It fills instantly in market hours and queues
+        otherwise, so we re-read the position and report 'flat' or 'pending'
+        rather than announcing success either way.
+        """
+        info = res if isinstance(res, dict) else {"symbol": symbol, "orderId": "",
+                                                  "status": str(res), "cancelledOrders": 0}
+        flat, qty_left = True, 0.0
+        try:
+            qty_left = state.broker.position_qty(symbol)
+            flat = abs(qty_left) < 1e-9
+        except Exception:  # noqa: BLE001 — verification is best effort
+            flat = False
+
+        pre = (f"cancelled {info['cancelledOrders']} working order(s) first · "
+               if info.get("cancelledOrders") else "")
+        if flat:
+            msg = f"{pre}{symbol} closed — position is flat."
+        else:
+            msg = (f"{pre}{symbol} close order submitted"
+                   f"{' (' + info['status'] + ')' if info.get('status') else ''}"
+                   f" — still holding {qty_left:g}. It will fill when the market is open;"
+                   " the blotter updates as it does.")
+        return {"ok": True, "flat": flat, "qtyRemaining": qty_left,
+                "orderId": info.get("orderId", ""), "status": info.get("status", ""),
+                "cancelledOrders": info.get("cancelledOrders", 0), "message": msg}
+
     def _journal_close(symbol: str, pos) -> None:
         """Complete the journal entry for a position that just closed."""
         if pos is None:
