@@ -444,6 +444,27 @@ class RandomForest:
 
 
 # ── the walk-forward meta probability series ─────────────────────────────────
+def size_multiplier(p: float, threshold: float, floor: float = 0.5) -> float:
+    """Turn P(win) into a fraction of the size you asked for. Never above 1.0.
+
+    Below the threshold the trade is skipped outright. Above it, size ramps from
+    `floor` to full as the probability climbs from the threshold to certainty,
+    so a barely-passing signal gets half a position rather than the same
+    position as a strong one.
+
+    The cap at 1.0 is the important half of this function. Meta-labelling is
+    usually written to size both up and down, but sizing *up* means the terminal
+    filling an order larger than the one you typed, and no model's confidence is
+    worth that surprise. This can only ever shrink a trade or skip it.
+    """
+    if not np.isfinite(p) or not np.isfinite(threshold):
+        return 1.0                                  # no opinion: leave it alone
+    if p < threshold:
+        return 0.0
+    span = max(1.0 - threshold, 1e-6)
+    return float(min(1.0, floor + (1.0 - floor) * (p - threshold) / span))
+
+
 def cv_skill(X: np.ndarray, y: np.ndarray, w: np.ndarray, t0: np.ndarray, t1: np.ndarray,
              *, n_splits: int = 5, n_estimators: int = 15, max_depth: int = 3,
              min_samples_leaf: int = 50, embargo_pct: float = 0.01) -> dict:

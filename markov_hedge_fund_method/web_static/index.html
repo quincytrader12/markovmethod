@@ -132,6 +132,17 @@
   .hl-row .k{font-family:var(--mono); color:var(--dim); font-size:10px; min-width:74px; letter-spacing:1px}
   .hl-row .t{color:var(--dim); font-family:var(--mono); font-size:10px; margin-left:auto}
   .hl-ok{color:var(--green)} .hl-bad{color:var(--amber)}
+  /* meta-labelled sizing preview — the order must never change size silently */
+  .metasize{margin-top:7px; font-size:11px; line-height:1.5; display:none}
+  .metasize.on{display:block}
+  .metasize .badge{display:inline-block; font-family:var(--mono); font-weight:700;
+    padding:1px 7px; border-radius:3px; margin-right:6px}
+  .metasize.cut .badge{background:rgba(245,196,81,.16); color:var(--amber); border:1px solid var(--amber)}
+  .metasize.skip .badge{background:rgba(255,82,82,.16); color:var(--red); border:1px solid var(--red)}
+  .metasize.full .badge{background:rgba(0,230,118,.14); color:var(--green); border:1px solid var(--green)}
+  .metasize .why{color:var(--dim)}
+  .metasize .ovr{margin-left:6px; color:var(--dim); text-decoration:underline; cursor:pointer}
+  .metasize .ovr:hover{color:var(--cyan)}
   #health-dot.warn{color:var(--amber)}
   .scan-list{overflow-y:auto; padding:10px 14px; display:flex; flex-direction:column; gap:8px}
   .scan-card{border:1px solid var(--edge); border-left:3px solid var(--edge); border-radius:4px;
@@ -619,6 +630,7 @@
           <label class="fld" data-need="legs">Stop-loss<input id="o-slstop" type="number" step="any"></label>
         </div>
         <div class="afford" id="afford"><span class="muted">price —</span></div>
+        <div class="metasize" id="metasize"></div>
         <div class="row">
           <button class="act buy" id="btn-submit" onclick="submitOrder()">Submit</button>
           <button class="act ghost" onclick="fillMax()" title="fill max affordable qty">Max</button>
@@ -752,7 +764,8 @@ function selectSymbol(s, addToWatch){
   s=(s||'').toUpperCase(); if(!s) return;
   SYMBOL = s; if(addToWatch!==false) ensureWatchlist(s);
   markActive(s); $('o-symbol').value = s;
-  loadState(false); loadNews(); loadPortfolio();
+  META_OVERRIDE=false;                       // a new symbol is a new decision
+  loadState(false); loadNews(); loadPortfolio(); refreshMetaSizing();
 }
 /* validate against Alpaca (when connected) before adding a searched symbol */
 function pickSymbol(raw){
@@ -1196,6 +1209,40 @@ function syncOrderFields(){
   document.querySelectorAll('[data-need]').forEach(el=>{ el.style.display = need[el.dataset.need]?'flex':'none'; });
 }
 function numOrNull(id){ const v=$(id).value.trim(); return v===''?null:Number(v); }
+/* ---------- meta-labelled sizing ----------
+   The forest can shrink or refuse an opening trade. Whatever it intends to do,
+   it says so here while the ticket is still being filled in — a resized order
+   discovered after the fact is a bug, not a feature. */
+let META_SIZE=null, META_OVERRIDE=false, META_SEQ=0;
+async function refreshMetaSizing(){
+  const el=$('metasize'); if(!el) return;
+  const sym=$('o-symbol').value.trim().toUpperCase();
+  if(!sym){ el.className='metasize'; META_SIZE=null; return; }
+  const seq=++META_SEQ;
+  try{
+    const d=await api('/api/meta-sizing?symbol='+encodeURIComponent(sym));
+    if(seq!==META_SEQ) return;               // a later symbol won the race
+    META_SIZE=d; renderMetaSizing();
+  }catch(e){ if(seq===META_SEQ){ el.className='metasize'; META_SIZE=null; } }
+}
+function renderMetaSizing(){
+  const el=$('metasize'), d=META_SIZE; if(!el) return;
+  if(!d || !d.enabled || !d.engaged){ el.className='metasize'; el.innerHTML=''; return; }
+  const m=d.multiplier;
+  if(m>=1){ el.className='metasize on full';
+    el.innerHTML='<span class="badge">FULL SIZE</span><span class="why">forest agrees — '+esc(d.reason)+'</span>';
+    return; }
+  const kind = m<=0 ? 'skip' : 'cut';
+  const badge = m<=0 ? 'SKIP' : (m.toFixed(2)+'×');
+  const lead = m<=0 ? 'the forest would refuse this trade'
+                    : 'the forest would send '+Math.round(m*100)+'% of your size';
+  el.className='metasize on '+kind;
+  el.innerHTML='<span class="badge">'+badge+'</span><span class="why">'+lead+' — '+esc(d.reason)+
+    '</span><span class="ovr" onclick="toggleMetaOverride()">'+
+    (META_OVERRIDE?'overriding — click to re-enable':'override for this order')+'</span>';
+}
+function toggleMetaOverride(){ META_OVERRIDE=!META_OVERRIDE; renderMetaSizing(); }
+
 async function submitOrder(){
   const body={ symbol:$('o-symbol').value.trim().toUpperCase(), side:SIDE,
     order_type:$('o-type').value, time_in_force:$('o-tif').value, order_class:$('o-class').value,
@@ -1203,9 +1250,15 @@ async function submitOrder(){
     stop_price:numOrNull('o-stop'), trail_price:numOrNull('o-trailp'), trail_percent:numOrNull('o-trailpct'),
     take_profit_limit:numOrNull('o-tp'), stop_loss_stop:numOrNull('o-slstop'),
     lots:numOrNull('o-lots'), lot_size:(numOrNull('o-lotsize')||100) };
+  if(META_OVERRIDE) body.skipMetaSizing=true;
   try{
     const r=await api('/api/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    log(`order sent ${r.summary} → <b>${r.id}</b> [${r.status}]`,'ok'); loadPortfolio();
+    log(`order sent ${r.summary} → <b>${r.id}</b> [${r.status}]`,'ok');
+    if(r.metaSizing){
+      log(`meta-labelled to ${r.metaSizing.multiplier.toFixed(2)}× — sent `+
+          `${r.metaSizing.appliedQty!=null?r.metaSizing.appliedQty+' shares':'$'+r.metaSizing.appliedNotional}`,'warn');
+    }
+    META_OVERRIDE=false; loadPortfolio(); refreshMetaSizing();
   }catch(e){ log('order rejected: '+e.message,'err'); }
 }
 async function cancelAll(){
@@ -1984,6 +2037,8 @@ function wireControls(){
   // scanner + blotter + journal + alerts: Escape closes, backdrop click closes
   document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeScanner(); closeBlotter(); closeJournal(); closeAlerts(); closeHeat(); closeHealth(); } });
   $('heat-modal').addEventListener('click', e=>{ if(e.target.id==='heat-modal') closeHeat(); });
+  $('o-symbol').addEventListener('change', ()=>{ META_OVERRIDE=false; refreshMetaSizing(); });
+  refreshMetaSizing();
   $('hlth-modal').addEventListener('click', e=>{ if(e.target.id==='hlth-modal') closeHealth(); });
   pollHealth();                       // colour the chip on load
   setInterval(pollHealth, 120000);    // and keep it honest, cheaply

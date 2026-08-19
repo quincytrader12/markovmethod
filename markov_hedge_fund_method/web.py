@@ -167,6 +167,7 @@ class AppState:
         self._state_vol_cache: dict[str, tuple[float, dict]] = {}
         self._state_meta_cache: dict[str, tuple[float, dict]] = {}
         self._heat_cache: dict[str, tuple[float, dict]] = {}
+        self._meta_size_cache: dict[str, tuple[float, dict]] = {}
         self._news_cache: dict[str, tuple[float, list]] = {}
         self._alpaca_symbols: set[str] | None = None
         self._alpaca_names: dict[str, str] = {}
@@ -182,6 +183,7 @@ class AppState:
         self._state_vol_cache.clear()
         self._state_meta_cache.clear()
         self._heat_cache.clear()
+        self._meta_size_cache.clear()
         self._scan_cache.clear()
         self._regperf_cache.clear()
         self._ohlc_cache.clear()
@@ -375,6 +377,112 @@ class AppState:
         payload["name"] = self.name_for(symbol)
         cache[symbol] = (time.monotonic(), payload)
         return payload
+
+    # ── the meta-labelling forest, and its licence to touch a live order ─────
+    def meta_report(self, symbol: str) -> dict:
+        """All three curves for a symbol, each Sharpe deflated, plus the verdict.
+
+        `beatsBase` is the deployment gate, computed here rather than left to
+        the eye — and it is the same value live sizing consults, so what the
+        panel shows you and what the terminal acts on cannot disagree.
+        """
+        from .sharpe_stats import deannualize, deflated_sharpe
+        from .sharpe_stats import verdict as _verdict
+
+        symbol = (symbol or "").strip().upper() or self.settings.ticker
+        payload = self.state_payload(symbol, with_meta=True)
+        m = payload.get("metrics", {})
+        meta = m.get("meta")
+        skew, kurt = m.get("skew", 0.0), m.get("kurtosis", 3.0)
+        n_trials, s_var = 3, 0.25   # base, vol-targeted, meta-labelled
+
+        def dsr(sharpe, n_obs):
+            if sharpe is None or not n_obs or n_obs < 3:
+                return None
+            p = deflated_sharpe(deannualize(sharpe), int(n_obs), n_trials, s_var,
+                                skew=skew, kurtosis=kurt)
+            return {"dsr": round(p, 4), "verdict": _verdict(p)}
+
+        base_dsr = dsr(m.get("sharpe"), m.get("nObs"))
+        meta_dsr = dsr(None if not meta else meta.get("sharpe"),
+                       None if not meta else meta.get("nTrades"))
+        beats = bool(meta and meta.get("sharpe") is not None
+                     and m.get("sharpe") is not None
+                     and meta["sharpe"] > m["sharpe"]
+                     and meta_dsr and base_dsr
+                     and meta_dsr["dsr"] >= base_dsr["dsr"])
+        return {
+            "symbol": symbol,
+            "dataSource": payload.get("dataSource"),
+            "base": {"sharpe": m.get("sharpe"), "maxDrawdown": m.get("maxDrawdown"),
+                     "winRate": m.get("winRate"), "nObs": m.get("nObs"),
+                     "equity": m.get("equity", []), "equityIndex": m.get("equityIndex", []),
+                     **(base_dsr or {})},
+            "vt": m.get("vt"),
+            "meta": None if not meta else {**meta, **(meta_dsr or {})},
+            "beatsBase": beats,
+        }
+
+    def meta_sizing_enabled(self) -> bool:
+        cfg = self.telegram.load()
+        return bool(cfg.get("metaSizing", True))
+
+    META_SIZE_TTL = 900.0
+
+    def meta_sizing(self, symbol: str) -> dict:
+        """What the forest is allowed to do to an order for this symbol.
+
+        Three independent conditions have to hold before a single share moves:
+
+          1. the setting is on;
+          2. the forest's own skill gate opened for this symbol — purged
+             cross-validation found out-of-sample predictive power;
+          3. the meta-labelled curve beat the plain one *after deflation*.
+
+        Any one of them failing returns a multiplier of exactly 1.0, meaning the
+        order goes out at the size you typed. The default is the untouched
+        order; the forest has to earn every deviation from it, per symbol, and
+        the reason it gives is the reason shown in the panel.
+        """
+        symbol = (symbol or "").strip().upper()
+        idle = {"symbol": symbol, "engaged": False, "multiplier": 1.0, "pWin": None,
+                "threshold": None, "reason": "", "enabled": self.meta_sizing_enabled()}
+        if not self.meta_sizing_enabled():
+            return {**idle, "reason": "meta sizing is switched off"}
+
+        cached = self._meta_size_cache.get(symbol)
+        if cached and (time.monotonic() - cached[0]) < self.META_SIZE_TTL:
+            return cached[1]
+
+        try:
+            report = self.meta_report(symbol)
+        except Exception as exc:  # noqa: BLE001 — sizing must never block an order
+            return {**idle, "reason": f"could not evaluate the forest ({exc})"}
+
+        meta = report.get("meta")
+        if str(report.get("dataSource", "")).startswith("synthetic"):
+            out = {**idle, "reason": "no live market data for this symbol"}
+        elif not meta:
+            out = {**idle, "reason": "not enough history to train the forest"}
+        elif not meta.get("active"):
+            out = {**idle, "reason": "cross-validation found no predictive skill here"}
+        elif not report.get("beatsBase"):
+            out = {**idle, "reason": "the filtered curve does not beat the plain one after deflation"}
+        else:
+            from .meta_label import size_multiplier
+
+            p, thr = meta.get("pWinNow"), meta.get("threshold")
+            mult = 1.0 if p is None else size_multiplier(p, thr)
+            out = {
+                "symbol": symbol, "engaged": True, "multiplier": round(float(mult), 3),
+                "pWin": p, "threshold": thr, "enabled": True,
+                "cvAuc": meta.get("cvAuc"),
+                "reason": ("the forest rates this signal below its own base rate"
+                           if mult == 0.0 else
+                           f"P(win) {p:.0%} vs a {thr:.0%} base rate"),
+            }
+        self._meta_size_cache[symbol] = (time.monotonic(), out)
+        return out
 
     # Scored-universe cache. Regimes move on a daily scale, so a few minutes of
     # staleness is harmless — and it makes every rescan/filter change instant.
@@ -627,42 +735,25 @@ def create_app(state: AppState):
         against what the best of that many noise draws would have produced. A
         filter that only wins before deflation has not won.
         """
-        from .sharpe_stats import deannualize, deflated_sharpe, verdict as _verdict
+        return state.meta_report(symbol)
 
-        symbol = symbol.strip().upper() or "SPY"
-        payload = state.state_payload(symbol, with_meta=True)
-        m = payload.get("metrics", {})
-        meta = m.get("meta")
-        skew, kurt = m.get("skew", 0.0), m.get("kurtosis", 3.0)
-        n_trials, s_var = 3, 0.25   # base, vol-targeted, meta-labelled
+    @app.get("/api/meta-sizing")
+    def meta_sizing_endpoint(symbol: str = "SPY"):
+        """What the forest would do to an order for this symbol, before you send it.
 
-        def dsr(sharpe, n_obs):
-            if sharpe is None or not n_obs or n_obs < 3:
-                return None
-            p = deflated_sharpe(deannualize(sharpe), int(n_obs), n_trials, s_var,
-                                skew=skew, kurtosis=kurt)
-            return {"dsr": round(p, 4), "verdict": _verdict(p)}
+        The execution panel reads this so a resized order is never a surprise:
+        you see the multiplier and the reason for it while you are still filling
+        in the ticket.
+        """
+        return state.meta_sizing(symbol.strip().upper() or "SPY")
 
-        base_dsr = dsr(m.get("sharpe"), m.get("nObs"))
-        meta_dsr = dsr(None if not meta else meta.get("sharpe"),
-                       None if not meta else meta.get("nTrades"))
-        beats = bool(meta and meta.get("sharpe") is not None
-                     and m.get("sharpe") is not None
-                     and meta["sharpe"] > m["sharpe"]
-                     and meta_dsr and base_dsr
-                     and meta_dsr["dsr"] >= base_dsr["dsr"])
-        return {
-            "symbol": symbol,
-            "dataSource": payload.get("dataSource"),
-            "base": {"sharpe": m.get("sharpe"), "maxDrawdown": m.get("maxDrawdown"),
-                     "winRate": m.get("winRate"), "nObs": m.get("nObs"),
-                     "equity": m.get("equity", []), "equityIndex": m.get("equityIndex", []),
-                     **(base_dsr or {})},
-            "vt": m.get("vt"),
-            "meta": None if not meta else {**meta, **(meta_dsr or {})},
-            # The deployment gate, computed here rather than left to the eye.
-            "beatsBase": beats,
-        }
+    @app.post("/api/meta-sizing/toggle")
+    async def meta_sizing_toggle(request: Request):
+        data = await request.json()
+        enabled = bool(data.get("enabled"))
+        state.telegram.save(metaSizing=enabled)
+        state._meta_size_cache.clear()
+        return {"ok": True, "enabled": state.meta_sizing_enabled()}
 
     @app.get("/api/candles")
     def candles(symbol: str = "SPY", tf: str = "1D"):
@@ -1155,6 +1246,55 @@ def create_app(state: AppState):
             pass
         return {"cancelled": cancelled, "closed": closed}
 
+    def _is_opening(state, ticket) -> bool:
+        """True when this ticket opens or adds to a position rather than closing one.
+
+        Sizing may only touch trades that put risk on. If you already hold the
+        symbol and the order runs the other way, it is an exit — and an exit
+        must go out whole, at the size you asked for, whatever any model thinks
+        of it.
+        """
+        try:
+            pos = state.broker.get_position(ticket.symbol)
+        except Exception:  # noqa: BLE001 — no position, or no way to ask
+            return True
+        if pos is None:
+            return True
+        try:
+            held = float(getattr(pos, "qty", 0) or 0)
+        except (TypeError, ValueError):
+            return True
+        if held == 0:
+            return True
+        side = (getattr(ticket, "side", "") or "").lower()
+        return (held > 0 and side == "buy") or (held < 0 and side == "sell")
+
+    def _scale_ticket(ticket, mult: float):
+        """Shrink a ticket's size, leaving every other field exactly as typed.
+
+        Only the three size fields move. Lots are rounded down to whole lots and
+        shares to whole shares where the original was whole, so scaling never
+        turns a clean order into a fractional one the broker may reject.
+        """
+        from dataclasses import replace as _replace
+
+        changes = {}
+        if ticket.qty is not None:
+            q = float(ticket.qty) * mult
+            changes["qty"] = float(int(q)) if float(ticket.qty).is_integer() else round(q, 6)
+        if ticket.lots is not None:
+            lot = float(ticket.lots) * mult
+            changes["lots"] = float(int(lot)) if float(ticket.lots).is_integer() else round(lot, 6)
+        if ticket.notional is not None:
+            changes["notional"] = round(float(ticket.notional) * mult, 2)
+        # Scaling to nothing is a skip, not an order for zero shares.
+        for field in ("qty", "lots", "notional"):
+            if field in changes and changes[field] <= 0:
+                raise HTTPException(status_code=409, detail=(
+                    "Meta-labelling scaled this order below the smallest tradable "
+                    "size. Send it again with 'skipMetaSizing' to override."))
+        return _replace(ticket, **changes) if changes else ticket
+
     @app.post("/api/orders")
     async def submit_order(request: Request):
         if state.broker is None:
@@ -1166,6 +1306,31 @@ def create_app(state: AppState):
         if not isinstance(data, dict) or not data.get("symbol"):
             raise HTTPException(status_code=400, detail="An order needs at least a symbol.")
         ticket = OrderTicket(**{k: v for k, v in data.items() if k in _ORDER_FIELDS})
+
+        # Meta-labelling applied to the live ticket. It can shrink the order or
+        # refuse it; it can never enlarge it, and it never touches the side, the
+        # symbol, or any price. An opening trade only — reducing an exit because
+        # a model dislikes it would leave you stuck in a position you asked to
+        # leave, which is the one thing a sizing layer must never do.
+        sizing = None
+        try:
+            consult = state.meta_sizing_enabled() and not data.get("skipMetaSizing")
+            sizing = state.meta_sizing(ticket.symbol) if consult else None
+        except Exception:  # noqa: BLE001
+            # A sizing layer that breaks must not take the order down with it.
+            # Failing open sends exactly what you typed, which is the same thing
+            # that would have happened before this feature existed.
+            sizing = None
+        if sizing is not None:
+            if sizing.get("engaged") and _is_opening(state, ticket):
+                mult = float(sizing["multiplier"])
+                if mult <= 0.0:
+                    raise HTTPException(status_code=409, detail=(
+                        f"Meta-labelling skipped this trade: {sizing['reason']}. "
+                        "Send it again with 'skipMetaSizing' to override."))
+                if mult < 1.0:
+                    ticket = _scale_ticket(ticket, mult)
+
         try:
             result = state.broker.submit_ticket(ticket)
         except OrderValidationError as exc:
@@ -1176,13 +1341,23 @@ def create_app(state: AppState):
             raise HTTPException(status_code=502, detail=f"order rejected: {exc}")
         # auto-journal the entry with the regime the symbol was in (never fatal)
         try:
+            note = ""
+            if sizing is not None and sizing.get("engaged") and float(sizing["multiplier"]) < 1.0:
+                note = (f"meta-labelled to {sizing['multiplier']:.2f}x "
+                        f"— {sizing['reason']}")
             state.journal.add(
                 symbol=ticket.symbol, side=getattr(ticket, "side", None) or "buy",
                 qty=ticket.qty, price=ticket.limit_price or ticket.stop_price,
-                regime=state.journal_regime(ticket.symbol), source="order")
+                regime=state.journal_regime(ticket.symbol), source="order", notes=note)
         except Exception:  # noqa: BLE001
             pass
-        return {"id": result.id, "status": result.status, "summary": result.summary}
+        out = {"id": result.id, "status": result.status, "summary": result.summary}
+        if sizing is not None and sizing.get("engaged") and float(sizing["multiplier"]) < 1.0:
+            # Say so in the response. An order that went out smaller than the
+            # one you typed must never be reported as though nothing happened.
+            out["metaSizing"] = {**sizing, "appliedQty": ticket.qty,
+                                 "appliedNotional": ticket.notional}
+        return out
 
     @app.post("/api/orders/cancel_all")
     def cancel_all():
