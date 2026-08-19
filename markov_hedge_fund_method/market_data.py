@@ -95,6 +95,65 @@ def _alpaca_bars(ticker: str, years: int, api_key: str, api_secret: str) -> pd.D
     return _ohlc_columns(bars)
 
 
+def batch_alpaca_ohlc(symbols: list[str], years: int, api_key: str, api_secret: str,
+                      chunk: int = 200) -> dict[str, pd.DataFrame]:
+    """Daily OHLC for many symbols at once.
+
+    This is the difference between scanning a hundred names and scanning the
+    whole market. Alpaca's bars endpoint takes a *list* of symbols and returns
+    one multi-indexed frame, so a thousand symbols costs five requests instead
+    of a thousand. The per-symbol path stays for single lookups; anything that
+    sweeps a universe should come through here.
+
+    Crypto (dash-form) symbols are skipped — they use a different endpoint and
+    there are only a handful, so the caller fetches those individually.
+
+    A chunk that fails is skipped rather than raising: one bad symbol in a
+    batch of two hundred must not cost the other one hundred and ninety-nine.
+    """
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+
+    equities = [s for s in symbols if "/" not in s and "-" not in s]
+    if not equities:
+        return {}
+
+    client = StockHistoricalDataClient(api_key, api_secret)
+    start = (pd.Timestamp.now(tz="UTC").normalize() - pd.DateOffset(years=years)).to_pydatetime()
+    out: dict[str, pd.DataFrame] = {}
+
+    for i in range(0, len(equities), chunk):
+        batch = equities[i: i + chunk]
+        try:
+            bars = client.get_stock_bars(StockBarsRequest(
+                symbol_or_symbols=batch, timeframe=TimeFrame.Day, start=start)).df
+        except Exception:  # noqa: BLE001 — a bad chunk must not sink the sweep
+            continue
+        if bars is None or bars.empty:
+            continue
+        if isinstance(bars.index, pd.MultiIndex):
+            for sym in batch:
+                try:
+                    sub = bars.xs(sym, level=0)
+                except KeyError:
+                    continue
+                try:
+                    frame = _ohlc_columns(sub)
+                except Exception:  # noqa: BLE001
+                    continue
+                if not frame.empty:
+                    out[sym] = frame
+        elif len(batch) == 1:
+            try:
+                frame = _ohlc_columns(bars)
+            except Exception:  # noqa: BLE001
+                continue
+            if not frame.empty:
+                out[batch[0]] = frame
+    return out
+
+
 def from_alpaca(ticker: str, years: int, api_key: str, api_secret: str) -> pd.Series:
     return _alpaca_bars(ticker, years, api_key, api_secret)["Close"].dropna()
 

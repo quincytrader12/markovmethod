@@ -86,11 +86,67 @@ SCAN_GROUPS = {
         "ARKK", "IWM", "DIA", "SPY", "QQQ", "EEM", "EFA", "TLT", "HYG", "GLD",
     ],
     "crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD"],
+    # The gap this closes: the groups above are tech and growth almost end to
+    # end, so a regime flip in Starbucks, Coca-Cola or Caterpillar could never
+    # reach an alert. These are the large, liquid names in the sectors that had
+    # no single-stock coverage at all — only a sector ETF standing in for them.
+    "consumer": [
+        "SBUX", "MCD", "NKE", "KO", "PEP", "DIS", "TGT", "LOW", "HD", "WMT",
+        "COST", "PG", "CL", "KMB", "GIS", "K", "HSY", "MDLZ", "KHC", "STZ",
+        "TAP", "MO", "PM", "YUM", "CMG", "DPZ", "DRI", "MAR", "HLT", "LVS",
+        "MGM", "RCL", "CCL", "NCLH", "EBAY", "BBY", "DG", "DLTR", "ROST", "TJX",
+        "ULTA", "LULU", "DECK", "VFC", "GPS", "M", "KR", "SYY", "EL", "CLX",
+    ],
+    "health": [
+        "UNH", "LLY", "JNJ", "PFE", "MRK", "ABBV", "ABT", "TMO", "DHR", "BMY",
+        "AMGN", "GILD", "CVS", "CI", "ELV", "HCA", "MDT", "SYK", "BSX", "ISRG",
+        "ZTS", "REGN", "VRTX", "BIIB", "MRNA", "IDXX", "EW", "DXCM", "ALGN", "HUM",
+    ],
+    "financial": [
+        "JPM", "BAC", "WFC", "GS", "MS", "C", "SCHW", "BLK", "BX", "KKR",
+        "AXP", "V", "MA", "PYPL", "COF", "USB", "PNC", "TFC", "BK", "STT",
+        "SPGI", "MCO", "ICE", "CME", "NDAQ", "AIG", "MET", "PRU", "ALL", "TRV",
+        "PGR", "CB", "BRK.B",
+    ],
+    "industrial": [
+        "CAT", "DE", "BA", "GE", "HON", "MMM", "LMT", "RTX", "NOC", "GD",
+        "UNP", "CSX", "NSC", "UPS", "FDX", "DAL", "UAL", "AAL", "LUV", "EMR",
+        "ETN", "PH", "ITW", "CMI", "PCAR", "ROK", "URI", "WM", "RSG", "JCI",
+    ],
+    "energy": [
+        "XOM", "CVX", "COP", "OXY", "SLB", "HAL", "BKR", "EOG", "PXD", "DVN",
+        "FANG", "HES", "MPC", "PSX", "VLO", "KMI", "WMB", "OKE", "LNG", "NEE",
+        "DUK", "SO", "D", "AEP", "EXC", "SRE", "XEL", "ED", "PEG", "FSLR",
+    ],
+    "telecom": [
+        "T", "VZ", "TMUS", "CMCSA", "CHTR", "WBD", "PARA", "FOXA", "NWSA", "OMC",
+        "IPG", "LYV", "EA", "TTWO", "MTCH", "SPOT", "NFLX", "DIS",
+    ],
+    "semis": [
+        "NVDA", "AMD", "INTC", "MU", "AVGO", "QCOM", "TXN", "ADI", "AMAT", "LRCX",
+        "KLAC", "NXPI", "MCHP", "ON", "SWKS", "QRVO", "MRVL", "TER", "ENTG", "ARM",
+        "SMCI", "TSM", "ASML",
+    ],
+    "software": [
+        "MSFT", "ORCL", "CRM", "ADBE", "NOW", "INTU", "IBM", "SAP", "WDAY", "ADSK",
+        "SNPS", "CDNS", "ANSS", "PTC", "TYL", "CSCO", "ANET", "JNPR", "FFIV", "AKAM",
+        "VMW", "DELL", "HPQ", "HPE", "NTAP", "STX", "WDC", "GLW", "KEYS", "APH",
+    ],
+    "megacap_intl": [
+        "SHEL", "BP", "UL", "AZN", "GSK", "DEO", "BCS", "HSBC", "NVO", "SNY",
+        "TM", "SONY", "HMC", "BABA", "PDD", "JD", "NTES", "BIDU", "INFY", "WIT",
+        "RIO", "BHP", "VALE", "TTE", "E", "MUFG", "SMFG", "ING", "BBVA", "SAN",
+    ],
 }
 
-# The default sweep: everything except crypto — ~100 names, wide enough that the
-# picks are not just the same ten mega-caps every day.
-SCAN_UNIVERSE = (SCAN_GROUPS["megacap"] + SCAN_GROUPS["midcap"] + SCAN_GROUPS["sector"])
+# The default sweep: every group except crypto, deduplicated. A name that sits
+# in two groups (NVDA is both a mega-cap and a semi) must be scanned once.
+SCAN_UNIVERSE = list(dict.fromkeys(
+    s for name, group in SCAN_GROUPS.items() if name != "crypto" for s in group))
+
+# Everything above, plus crypto: the widest sweep that does not need a live
+# Alpaca connection to enumerate.
+SCAN_ALL = list(dict.fromkeys(SCAN_UNIVERSE + SCAN_GROUPS["crypto"]))
 
 
 # Full names for the bundled universe (tooltips). When connected to Alpaca the
@@ -159,6 +215,15 @@ class AppState:
         self.watcher = ScanWatcher(self)
         from .healing import Healer
         self.healer = Healer(self)
+        from .sweep import MarketSweep
+        self.sweep = MarketSweep(self)
+        # Symbols the user is actually looking at, so the full-market sweep does
+        # not evict the history behind their own chart while they use it.
+        self.watchlist_hint: list = list(DEFAULT_SYMBOLS)
+        # When the user last asked the terminal for anything. The full-market
+        # sweep watches this and steps aside: background work is worth nothing
+        # if it makes the screen in front of you stutter.
+        self.last_activity: float = 0.0
         self.broker = None if demo else make_broker(settings)
         self._state_cache: dict[str, tuple[float, dict]] = {}
         self._regperf_cache: dict[str, tuple[float, dict]] = {}
@@ -488,12 +553,67 @@ class AppState:
     # staleness is harmless — and it makes every rescan/filter change instant.
     SCAN_TTL = 300.0
 
-    def scored_universe(self, scope: str, symbols: list, *, workers: int = 16) -> list:
+    def note_activity(self) -> None:
+        self.last_activity = time.monotonic()
+
+    def idle_for(self) -> float:
+        """Seconds since the user last touched the terminal."""
+        return time.monotonic() - self.last_activity
+
+    def prefetch_ohlc(self, symbols: list) -> dict:
+        """Bulk-download price history for a whole universe in a few requests.
+
+        Fetching one symbol at a time is what limited the scanner to a hundred
+        names: a thousand symbols meant a thousand round-trips. Alpaca's bars
+        endpoint takes a list, so the same thousand costs five. Everything lands
+        in the shared OHLC cache, and the scan that follows is pure arithmetic
+        on data already in memory.
+
+        Best-effort by design. Anything this misses is simply fetched the old
+        way by whoever needs it, so a failure here is slow, never wrong.
+        """
+        stats = {"requested": 0, "cached": 0, "fetched": 0, "missed": 0}
+        if self.demo or not self.settings.has_credentials:
+            return stats
+        now = time.monotonic()
+        todo = []
+        for raw in symbols:
+            sym = str(raw).strip().upper()
+            if not sym:
+                continue
+            stats["requested"] += 1
+            hit = self._ohlc_cache.get(sym)
+            if hit and (now - hit[0]) < self.OHLC_TTL and hit[2] == "live":
+                stats["cached"] += 1
+                continue
+            todo.append(sym)
+        if not todo:
+            return stats
+        try:
+            from .market_data import batch_alpaca_ohlc
+
+            frames = batch_alpaca_ohlc(todo, self.settings.years,
+                                       self.settings.api_key, self.settings.api_secret)
+        except Exception:  # noqa: BLE001 — the per-symbol path still works
+            return stats
+        for sym, df in frames.items():
+            self._ohlc_cache[sym] = (time.monotonic(), df, "live")
+            self.healer.note_fetch(sym, True)
+            for c in (self._state_cache, self._state_vol_cache, self._state_meta_cache):
+                c.pop(sym, None)
+        stats["fetched"] = len(frames)
+        stats["missed"] = len(todo) - len(frames)
+        return stats
+
+    def scored_universe(self, scope: str, symbols: list, *, workers: int = 16,
+                        prefetch: bool = True) -> list:
         """Scored list for a scan scope, memoised so filters/rescans are free."""
         from .scanner import score_symbols
         cached = self._scan_cache.get(scope)
         if cached and (time.monotonic() - cached[0]) < self.SCAN_TTL:
             return cached[1]
+        if prefetch:
+            self.prefetch_ohlc(symbols)
         results = score_symbols(self, symbols, workers=workers)
         self._scan_cache[scope] = (time.monotonic(), results)
         return results
@@ -558,6 +678,20 @@ def create_app(state: AppState):
     from fastapi.responses import FileResponse, JSONResponse
 
     app = FastAPI(title="Mamba Terminal", docs_url=None, redoc_url=None)
+
+    @app.middleware("http")
+    async def _track_activity(request: Request, call_next):
+        """Record that the user is here, so the sweep can get out of the way.
+
+        Status polls are excluded on purpose: the page polls health and sweep
+        progress on a timer, and counting those as activity would mean the
+        terminal permanently believed the user was busy and the sweep would
+        never run at all.
+        """
+        path = request.url.path
+        if not path.startswith(("/api/sweep", "/api/health", "/api/alerts")):
+            state.note_activity()
+        return await call_next(request)
 
     # ── page ─────────────────────────────────────────────────────────────────
     @app.get("/")
@@ -797,6 +931,18 @@ def create_app(state: AppState):
         elif scope == "watchlist":
             syms = [s.strip().upper() for s in watchlist.split(",") if s.strip()] or DEFAULT_SYMBOLS
             key = "watchlist:" + ",".join(sorted(syms))
+        elif scope == "full":
+            # The whole tradable market. Served from the background sweep's
+            # leaderboard rather than scored on the spot: a live scan of eleven
+            # thousand names would take minutes, and the sweep has been working
+            # on it since startup. Partial coverage is stated, never implied.
+            st = state.sweep.status()
+            result = rank(state.sweep.results(top=max(top, 200)), top=top,
+                          fresh_days=max(0, int(fresh)), proven_only=bool(proven), sort=sort)
+            result["universe"] = "full"
+            result["universeSize"] = st["universeSize"] or st["boardSize"]
+            result["sweep"] = st
+            return result
         elif scope in SCAN_GROUPS:
             syms, key = SCAN_GROUPS[scope], scope
         else:
@@ -807,6 +953,21 @@ def create_app(state: AppState):
         result["universe"] = scope
         result["universeSize"] = len(syms)
         return result
+
+    @app.get("/api/sweep")
+    def sweep_status():
+        """Progress of the full-market sweep, plus its current leaderboard."""
+        return {**state.sweep.status(), "top": state.sweep.results(25)}
+
+    @app.post("/api/sweep/start")
+    def sweep_start():
+        state.sweep.start()
+        return {"ok": True, **state.sweep.status()}
+
+    @app.post("/api/sweep/stop")
+    def sweep_stop():
+        state.sweep.stop()
+        return {"ok": True, **state.sweep.status()}
 
     @app.get("/api/regime-performance")
     def regime_perf(symbol: str = "SPY"):
@@ -1480,6 +1641,7 @@ def main() -> int:
     if state.watcher.config()["autoScan"]:
         state.watcher.start()  # keep hunting even with the page closed
     state.healer.start()       # repair drift, dead threads and dropped connections
+    state.sweep.start()        # keep working through the whole market in the background
 
     url = f"http://{args.host}:{args.port}/"
     print(f"Mamba Terminal web HUD → {url}  (Ctrl-C to stop)")

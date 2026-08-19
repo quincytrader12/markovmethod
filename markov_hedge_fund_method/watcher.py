@@ -26,7 +26,7 @@ import time
 DEFAULTS = {
     "autoScan": False,          # off until the user turns it on
     "scanIntervalMin": 30,
-    "scanUniverse": "market",
+    "scanUniverse": "full",      # the whole tradable market, via the sweep
     "scanMinDsr": 0.95,         # same bar as "Proven edge only"
     "scanFreshDays": 0,         # 0 = any age; 5 = only fresh flips
     "scanMinScore": 70,
@@ -122,11 +122,18 @@ class ScanWatcher:
         from .web import SCAN_GROUPS, SCAN_UNIVERSE
 
         scope = cfg["scanUniverse"]
-        syms = SCAN_GROUPS.get(scope, SCAN_UNIVERSE)
-        key = scope if scope in SCAN_GROUPS else "market"
-        # Few workers on purpose: this runs unattended in the background and
-        # must never make the UI feel sluggish while the user is trading.
-        scored = self.state.scored_universe(key, syms, workers=3)
+        if scope == "full":
+            # Read the full-market sweep's leaderboard instead of scanning a
+            # list. The sweep is already grinding through every tradable name in
+            # the background, so the alert path just reads what it has found —
+            # which is the whole point of running it continuously.
+            scored = self.state.sweep.results(200)
+        else:
+            syms = SCAN_GROUPS.get(scope, SCAN_UNIVERSE)
+            key = scope if scope in SCAN_GROUPS else "market"
+            # Few workers on purpose: this runs unattended in the background and
+            # must never make the UI feel sluggish while the user is trading.
+            scored = self.state.scored_universe(key, syms, workers=3)
         result = rank(scored, top=50, fresh_days=int(cfg["scanFreshDays"]),
                       proven_only=False, sort="score")
         return [r for r in result["results"]
