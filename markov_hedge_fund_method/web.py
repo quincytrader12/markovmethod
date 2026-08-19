@@ -157,6 +157,8 @@ class AppState:
         self.telegram = TelegramNotifier()
         from .watcher import ScanWatcher
         self.watcher = ScanWatcher(self)
+        from .healing import Healer
+        self.healer = Healer(self)
         self.broker = None if demo else make_broker(settings)
         self._state_cache: dict[str, tuple[float, dict]] = {}
         self._regperf_cache: dict[str, tuple[float, dict]] = {}
@@ -164,6 +166,7 @@ class AppState:
         self._ohlc_cache: dict[str, tuple[float, object, str]] = {}
         self._state_vol_cache: dict[str, tuple[float, dict]] = {}
         self._state_meta_cache: dict[str, tuple[float, dict]] = {}
+        self._heat_cache: dict[str, tuple[float, dict]] = {}
         self._news_cache: dict[str, tuple[float, list]] = {}
         self._alpaca_symbols: set[str] | None = None
         self._alpaca_names: dict[str, str] = {}
@@ -178,6 +181,7 @@ class AppState:
         self._state_cache.clear()   # a new account may change the data source
         self._state_vol_cache.clear()
         self._state_meta_cache.clear()
+        self._heat_cache.clear()
         self._scan_cache.clear()
         self._regperf_cache.clear()
         self._ohlc_cache.clear()
@@ -294,15 +298,27 @@ class AppState:
         symbol = symbol.upper()
         cached = self._ohlc_cache.get(symbol)
         if cached and (time.monotonic() - cached[0]) < self.OHLC_TTL:
-            return cached[1], cached[2]
+            # A cached *failure* is not the same as a cached success. Serving
+            # fabricated data for the full TTL because one fetch failed leaves
+            # the symbol broken long after the feed has come back, so a degraded
+            # symbol gets its own short retry schedule and heals on its own.
+            if not (cached[2].startswith("synthetic") and not self.demo
+                    and self.healer.should_retry(symbol)):
+                return cached[1], cached[2]
         if self.demo:
             df, source = synthetic_ohlc(seed=_seed(symbol)), "synthetic (demo)"
         else:
             try:
                 df, source = get_ohlc(replace(self.settings, ticker=symbol)), "live"
-            except Exception:  # noqa: BLE001 — never leave the HUD blank
+                self.healer.note_fetch(symbol, True)
+            except Exception as exc:  # noqa: BLE001 — never leave the HUD blank
                 df, source = synthetic_ohlc(seed=_seed(symbol)), "synthetic (data unavailable)"
+                self.healer.note_fetch(symbol, False, str(exc))
         self._ohlc_cache[symbol] = (time.monotonic(), df, source)
+        if source == "live":
+            # A recovered symbol must drop the payloads built from fake prices.
+            for c in (self._state_cache, self._state_vol_cache, self._state_meta_cache):
+                c.pop(symbol, None)
         return df, source
 
     def close_for(self, symbol: str):
@@ -326,6 +342,9 @@ class AppState:
     # own cache and a long TTL, and nothing reaches it unless the user opens the
     # panel that asks for it.
     META_TTL = 900.0
+    # Heatmaps read cached state, so this only saves the re-aggregation; short
+    # enough that toggling views never shows yesterday's board.
+    HEAT_TTL = 120.0
 
     def state_payload(self, symbol: str, *, with_vol: bool = False,
                       with_meta: bool = False) -> dict:
@@ -502,6 +521,101 @@ def create_app(state: AppState):
     def state_endpoint(symbol: str = "SPY"):
         symbol = symbol.strip().upper() or "SPY"
         return state.state_payload(symbol, with_vol=True)
+
+    @app.get("/api/heatmap")
+    def heatmap_endpoint(view: str = "regime", scope: str = "watchlist",
+                         symbols: str = "", watchlist: str = ""):
+        """Board-wide heatmaps: regime map, signal map, correlation.
+
+        Reads cached per-symbol state, so switching views is instant and no view
+        triggers a download the dashboard has not already paid for.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        from .heatmap import correlation_matrix, regime_grid, signal_map
+        from .regime import label_regimes
+
+        picked = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        if not picked:
+            if scope in SCAN_GROUPS:
+                picked = list(SCAN_GROUPS[scope])
+            elif scope == "market":
+                picked = list(SCAN_UNIVERSE)
+            else:
+                picked = ([s.strip().upper() for s in watchlist.split(",") if s.strip()]
+                          or list(DEFAULT_SYMBOLS))
+        picked = picked[:60]
+
+        view = (view or "regime").lower()
+        key = f"{view}|{scope}|{','.join(picked)}"
+        hit = state._heat_cache.get(key)
+        if hit and (time.monotonic() - hit[0]) < state.HEAT_TTL:
+            return hit[1]
+
+        # Only the signal map needs the full per-symbol payload; the regime and
+        # correlation views need price history and nothing else. Computing the
+        # walk-forward backtest for 60 names to colour a grid would be paying
+        # for the whole engine to render a picture of the labels.
+        needs_state = view == "signal"
+
+        def one(sym):
+            try:
+                close, _ = state.close_for(sym)
+                payload = state.state_payload(sym) if needs_state else None
+            except Exception:  # noqa: BLE001 — one bad symbol must not blank the board
+                return None
+            lab = None if view == "correlation" else label_regimes(
+                close, window=state.settings.window, threshold=state.settings.threshold)
+            return sym, payload, close, lab
+
+        # Threads earn their keep when the fetches are real network calls; the
+        # per-symbol maths is pandas-bound and gains nothing from more of them.
+        closes, labels, states = {}, {}, []
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(picked)))) as pool:
+            for got in pool.map(one, picked):
+                if got is None:
+                    continue
+                sym, payload, close, lab = got
+                if payload is not None:
+                    states.append(payload)
+                closes[sym] = close
+                if lab is not None:
+                    labels[sym] = lab
+
+        out = {"view": view, "scope": scope, "symbols": list(closes)}
+        if view == "signal":
+            out["signal"] = signal_map(states)
+        elif view in ("correlation", "corr"):
+            out["correlation"] = correlation_matrix(closes)
+        else:
+            out["regime"] = regime_grid(closes, labels)
+        state._heat_cache[key] = (time.monotonic(), out)
+        return out
+
+    @app.get("/api/health")
+    def health_endpoint():
+        """What is currently degraded, and what has been repaired."""
+        return state.healer.status()
+
+    @app.post("/api/health/heal")
+    def heal_now():
+        """Run the repair sweep on demand instead of waiting for the timer."""
+        result = state.healer.run()
+        return {"ok": True, "result": result, "status": state.healer.status()}
+
+    @app.post("/api/health/retry")
+    async def retry_symbol(request: Request):
+        """Force an immediate re-fetch of a symbol stuck on fallback data."""
+        payload = await request.json()
+        symbol = str(payload.get("symbol", "")).strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol is required")
+        state._ohlc_cache.pop(symbol, None)
+        state.healer.data_failures.pop(symbol, None)
+        for c in (state._state_cache, state._state_vol_cache, state._state_meta_cache):
+            c.pop(symbol, None)
+        _, source = state.ohlc_for(symbol)
+        return {"ok": source == "live", "symbol": symbol, "dataSource": source}
 
     @app.get("/api/meta-label")
     def meta_label_endpoint(symbol: str = "SPY"):
@@ -1190,6 +1304,7 @@ def main() -> int:
     state.prewarm_universe()   # Alpaca asset list, so search is instant from the first keystroke
     if state.watcher.config()["autoScan"]:
         state.watcher.start()  # keep hunting even with the page closed
+    state.healer.start()       # repair drift, dead threads and dropped connections
 
     url = f"http://{args.host}:{args.port}/"
     print(f"Mamba Terminal web HUD → {url}  (Ctrl-C to stop)")

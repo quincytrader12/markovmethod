@@ -85,6 +85,54 @@
   .btn-x{background:#08121c; border:1px solid var(--edge); color:var(--ink); border-radius:3px; cursor:pointer;
     padding:4px 10px; font-family:inherit; font-size:11px; letter-spacing:1px}
   .btn-x:hover{border-color:var(--cyan); color:var(--cyan)}
+  /* ── heatmap ─────────────────────────────────────────────────────────── */
+  .heat-box{width:min(1180px,97vw)}
+  /* The view toggle must not reflow when the active button changes: a segment
+     that resizes as you click it makes the whole header jump. */
+  #heat-seg{flex:0 0 auto}
+  #heat-seg button{white-space:nowrap; min-width:104px}
+  .heat-scope{flex:0 0 auto; background:#08121c; border:1px solid var(--edge); color:var(--ink);
+    font-family:inherit; font-size:10px; letter-spacing:1px; padding:5px 6px;
+    border-radius:3px; width:auto; min-width:158px}
+  .heat-wrap{padding:12px 14px; overflow:auto}
+  .heat-note{color:var(--dim); font-size:11px; margin:0 0 10px; line-height:1.55}
+  .heat-note b{color:var(--ink)}
+  .hm{border-collapse:separate; border-spacing:2px; font-family:var(--mono); font-size:10px}
+  .hm th{color:var(--dim); font-weight:400; font-size:9px; letter-spacing:.5px; padding:0 3px;
+    text-align:left; white-space:nowrap}
+  .hm th.sym{text-align:right; padding-right:8px; color:var(--ink); font-size:11px}
+  .hm td{width:20px; height:17px; border-radius:2px; background:#0a1420}
+  .hm td.bull{background:rgba(0,230,118,.85)}
+  .hm td.sideways{background:rgba(255,183,77,.75)}
+  .hm td.bear{background:rgba(255,82,82,.85)}
+  .hm td.faded{opacity:.42}
+  .heat-legend{display:flex; gap:14px; align-items:center; margin-top:12px;
+    color:var(--dim); font-size:10px; letter-spacing:1px}
+  .heat-legend i{display:inline-block; width:12px; height:12px; border-radius:2px;
+    margin-right:5px; vertical-align:-2px}
+  /* signal map — one tile per symbol, colour = direction, opacity = conviction */
+  .sig-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(112px,1fr)); gap:6px}
+  .sig-tile{border:1px solid var(--edge); border-radius:4px; padding:7px 9px; background:#07111b;
+    cursor:pointer}
+  .sig-tile:hover{border-color:var(--cyan)}
+  .sig-tile .s{font-family:var(--mono); font-size:13px; color:var(--ink)}
+  .sig-tile .v{font-family:var(--mono); font-size:15px; font-weight:700; margin-top:2px}
+  .sig-tile .m{color:var(--dim); font-size:9px; letter-spacing:.5px; margin-top:2px}
+  .sig-tile.unreal{border-style:dashed; opacity:.55}
+  .corr td.c{width:36px; height:22px; text-align:center; font-size:9px;
+    color:var(--ink); text-shadow:0 0 3px rgba(0,0,0,.9)}
+  .heat-stats{display:flex; gap:18px; flex-wrap:wrap; margin-bottom:10px}
+  .heat-stat{border:1px solid var(--edge); border-radius:4px; padding:6px 11px; background:#07111b}
+  .heat-stat b{display:block; font-family:var(--mono); font-size:15px; color:var(--ink)}
+  .heat-stat span{color:var(--dim); font-size:9px; letter-spacing:1px}
+  /* ── self-healing ────────────────────────────────────────────────────── */
+  .hl-row{display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--edge);
+    font-size:11px}
+  .hl-row:last-child{border-bottom:0}
+  .hl-row .k{font-family:var(--mono); color:var(--dim); font-size:10px; min-width:74px; letter-spacing:1px}
+  .hl-row .t{color:var(--dim); font-family:var(--mono); font-size:10px; margin-left:auto}
+  .hl-ok{color:var(--green)} .hl-bad{color:var(--amber)}
+  #health-dot.warn{color:var(--amber)}
   .scan-list{overflow-y:auto; padding:10px 14px; display:flex; flex-direction:column; gap:8px}
   .scan-card{border:1px solid var(--edge); border-left:3px solid var(--edge); border-radius:4px;
     padding:9px 12px; background:#07111b}
@@ -433,8 +481,12 @@
           title="Live positions, orders and P&amp;L — close or cancel in one click">▦ BLOTTER</span>
     <span class="chip scan-btn" id="btn-jrnl" onclick="openJournal()"
           title="Trade journal + performance broken down by regime">📓 JOURNAL</span>
+    <span class="chip scan-btn" id="btn-heat" onclick="openHeat()"
+          title="The whole board at once — regime map, signal map, correlation">🔥 HEATMAP</span>
     <span class="chip scan-btn" id="btn-alerts" onclick="openAlerts()"
           title="Regime-flip & price alerts, kill switch, daily-loss limit">🔔 ALERTS<span id="bell-badge"></span></span>
+    <span class="chip scan-btn" id="btn-health" onclick="openHealth()"
+          title="Self-healing status — degraded feeds, repairs made">🩺 <span id="health-dot">HEALTH</span></span>
     <span class="chip halted-chip" id="halt-ind" style="display:none">⛔ HALTED</span>
     <span class="chip" id="chip-acct">ACCT <b id="v-acct">none</b></span>
     <span class="chip"><span class="led off" id="led-conn"></span><b id="v-conn">offline</b></span>
@@ -1505,6 +1557,199 @@ async function delJournal(id){
 }
 
 /* ---------- alerts + risk automation ---------- */
+/* ── heatmap ─────────────────────────────────────────────────────────────
+   Three views over the same set of symbols. Everything is served from the
+   per-symbol cache the dashboard already fills, so switching views is a
+   re-render, not a re-download. */
+let HEAT_VIEW='regime';
+function openHeat(){ $('heat-modal').classList.add('open'); loadHeat(); }
+function closeHeat(){ $('heat-modal').classList.remove('open'); }
+function heatView(v){
+  HEAT_VIEW=v;
+  document.querySelectorAll('#heat-seg button').forEach(b=>
+    b.classList.toggle('on', b.dataset.view===v));
+  loadHeat();
+}
+async function loadHeat(){
+  const body=$('heat-body'); if(!body) return;
+  const scope=$('heat-scope').value;
+  body.innerHTML='<div class="scan-loading">Building the '+esc(HEAT_VIEW)+' map…</div>';
+  const p=new URLSearchParams({view:HEAT_VIEW, scope:scope});
+  if(scope==='watchlist') p.set('watchlist', currentWatch().join(','));
+  try{
+    const d=await api('/api/heatmap?'+p.toString());
+    if(HEAT_VIEW==='regime') renderRegimeMap(d.regime);
+    else if(HEAT_VIEW==='signal') renderSignalMap(d.signal);
+    else renderCorrMap(d.correlation);
+  }catch(e){ body.innerHTML='<div class="scan-loading">heatmap failed: '+esc(e.message)+'</div>'; }
+}
+function renderRegimeMap(d){
+  const body=$('heat-body');
+  if(!d || !d.rows.length){ body.innerHTML='<div class="scan-loading">nothing to map</div>'; return; }
+  let h='<div class="heat-wrap"><p class="heat-note">Each row is a symbol, each column one week. '+
+        'Green is <b>Bull</b>, amber <b>Sideways</b>, red <b>Bear</b> — faded means the week was '+
+        'split rather than decisive. Read it left to right for one name, top to bottom for the board: '+
+        'a rotation shows up as a colour front sweeping across the grid.</p>';
+  h+='<table class="hm"><tr><th class="sym"></th>';
+  d.dates.forEach((dt,i)=>{ h+='<th>'+(i%4===0?esc(dt.slice(5)):'')+'</th>'; });
+  h+='</tr>';
+  d.rows.forEach(r=>{
+    h+='<tr><th class="sym"><a href="#" onclick="selectSymbol(\''+esc(r.symbol)+'\');closeHeat();return false">'+esc(r.symbol)+'</a></th>';
+    const pad=d.dates.length-r.cells.length;
+    for(let i=0;i<pad;i++) h+='<td></td>';
+    r.cells.forEach(c=>{
+      h+='<td class="'+c.regime+(c.strength<0.7?' faded':'')+'" title="'+esc(c.regime)+
+         ' · '+Math.round(c.strength*100)+'% of the week"></td>';
+    });
+    h+='</tr>';
+  });
+  h+='</table><div class="heat-legend"><span><i style="background:rgba(0,230,118,.85)"></i>Bull</span>'+
+     '<span><i style="background:rgba(255,183,77,.75)"></i>Sideways</span>'+
+     '<span><i style="background:rgba(255,82,82,.85)"></i>Bear</span>'+
+     '<span><i style="background:rgba(0,230,118,.85);opacity:.42"></i>contested week</span></div></div>';
+  body.innerHTML=h;
+}
+function renderSignalMap(d){
+  const body=$('heat-body');
+  if(!d || !d.cells.length){ body.innerHTML='<div class="scan-loading">nothing to map</div>'; return; }
+  let h='<div class="heat-wrap"><p class="heat-note">Today\'s signal for every name, strongest first. '+
+        'The number is P(Bull next) − P(Bear next); the percentile is what actually matters — '+
+        'a +0.30 is only strong <b>relative to the rest of the board today</b>. '+
+        'Dashed tiles have no live market data.</p>';
+  h+='<div class="heat-stats">'+
+     '<div class="heat-stat"><b>'+fmt(d.median,3)+'</b><span>MEDIAN SIGNAL</span></div>'+
+     '<div class="heat-stat"><b>'+fmt(d.spread,3)+'</b><span>DISPERSION</span></div>'+
+     '<div class="heat-stat"><b>'+d.bullish+'</b><span>BULLISH NAMES</span></div>'+
+     '<div class="heat-stat"><b>'+d.bearish+'</b><span>BEARISH NAMES</span></div>'+
+     '</div><div class="sig-grid">';
+  d.cells.forEach(c=>{
+    const pos=c.signal>=0;
+    const a=Math.min(0.15+Math.abs(c.signal)*1.6, 1).toFixed(2);
+    const col=pos?'rgba(0,230,118,'+a+')':'rgba(255,82,82,'+a+')';
+    h+='<div class="sig-tile'+(c.real?'':' unreal')+'" style="border-left:3px solid '+col+'" '+
+       'title="'+esc(c.name||c.symbol)+' · '+c.n+' transitions behind it" '+
+       'onclick="selectSymbol(\''+esc(c.symbol)+'\');closeHeat()">'+
+       '<div class="s">'+esc(c.symbol)+'</div>'+
+       '<div class="v" style="color:'+(pos?'var(--green)':'var(--red)')+'">'+
+       (pos?'+':'')+fmt(c.signal,3)+'</div>'+
+       '<div class="m">'+Math.round(c.percentile*100)+'th pctile · '+
+       Math.round(c.confidence*100)+'% conf</div></div>';
+  });
+  h+='</div></div>';
+  body.innerHTML=h;
+}
+function renderCorrMap(d){
+  const body=$('heat-body');
+  if(!d || !d.matrix.length){
+    body.innerHTML='<div class="scan-loading">need at least two symbols with overlapping history</div>'; return; }
+  const avg=d.avgCorrelation;
+  const read = avg>0.7 ? 'This is essentially <b>one bet</b> wearing several tickers.'
+             : avg>0.4 ? 'Meaningfully concentrated — these names move together more than they move apart.'
+             : avg>0.15 ? 'Moderately related, with real diversification left.'
+             : 'Genuinely spread out — these are close to independent bets.';
+  let h='<div class="heat-wrap"><p class="heat-note">Correlation of daily returns over the last '+
+        d.window+' sessions. The single number that matters is the average: '+read+'</p>';
+  h+='<div class="heat-stats"><div class="heat-stat"><b>'+fmt(avg,3)+
+     '</b><span>AVERAGE CORRELATION</span></div>'+
+     '<div class="heat-stat"><b>'+d.symbols.length+'</b><span>SYMBOLS COMPARED</span></div></div>';
+  h+='<table class="hm corr"><tr><th class="sym"></th>';
+  d.symbols.forEach(s=>{ h+='<th>'+esc(s)+'</th>'; });
+  h+='</tr>';
+  d.matrix.forEach((row,i)=>{
+    h+='<tr><th class="sym">'+esc(d.symbols[i])+'</th>';
+    row.forEach((v,j)=>{
+      const a=Math.min(Math.abs(v),1).toFixed(2);
+      const col = i===j ? 'rgba(56,240,224,.35)'
+                : (v>=0 ? 'rgba(255,82,82,'+a+')' : 'rgba(0,230,118,'+a+')');
+      h+='<td class="c" style="background:'+col+'">'+(i===j?'':v.toFixed(2).replace('0.','.'))+'</td>';
+    });
+    h+='</tr>';
+  });
+  h+='</table><div class="heat-legend"><span><i style="background:rgba(255,82,82,.85)"></i>'+
+     'moves together (concentration risk)</span>'+
+     '<span><i style="background:rgba(0,230,118,.85)"></i>moves opposite (a real hedge)</span></div>';
+  if(d.clusters.length){
+    h+='<p class="heat-note" style="margin-top:14px">Tightest pairs: '+
+       d.clusters.slice(0,6).map(p=>'<b>'+esc(p.a)+'/'+esc(p.b)+'</b> '+p.corr.toFixed(2)).join(' · ')+'</p>';
+  }
+  h+='</div>';
+  body.innerHTML=h;
+}
+
+/* ── self-healing ────────────────────────────────────────────────────────
+   The terminal repairs itself in the background; this is where it says what
+   it repaired. The chip turns amber whenever something is currently degraded,
+   so a broken feed is visible without opening anything. */
+function openHealth(){ $('hlth-modal').classList.add('open'); loadHealth(); }
+function closeHealth(){ $('hlth-modal').classList.remove('open'); }
+async function healNow(){
+  const body=$('hlth-body');
+  if(body) body.innerHTML='<div class="scan-loading">running repairs…</div>';
+  try{ await api('/api/health/heal',{method:'POST'});
+       toast({message:'Repair sweep finished', level:'info', type:'health'}); }
+  catch(e){ toast({message:'heal failed: '+e.message, level:'critical', type:'health'}); }
+  loadHealth();
+}
+async function retryFeed(sym){
+  try{
+    const d=await api('/api/health/retry',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({symbol:sym})});
+    toast({message: d.ok ? sym+' back on live data' : sym+' still on '+d.dataSource,
+           level: d.ok?'info':'warning', type:'health'});
+    if(d.ok){ delete STATE_CACHE[sym]; if(sym===SYMBOL) selectSymbol(sym); }
+  }catch(e){ toast({message:'retry failed: '+e.message, level:'critical', type:'health'}); }
+  loadHealth();
+}
+async function pollHealth(){
+  try{
+    const d=await api('/api/health');
+    const dot=$('health-dot');
+    if(dot){
+      const bad=(d.degraded||[]).length;
+      dot.textContent = bad ? ('HEALTH '+bad) : 'HEALTH';
+      dot.className = bad ? 'warn' : '';
+    }
+    return d;
+  }catch(e){ return null; }
+}
+async function loadHealth(){
+  const body=$('hlth-body'); if(!body) return;
+  const d=await pollHealth();
+  if(!d){ body.innerHTML='<div class="scan-loading">could not read health</div>'; return; }
+  const when=t=>t?new Date(t*1000).toLocaleTimeString():'never';
+  let h='<div class="heat-wrap"><p class="heat-note">The terminal checks itself every '+
+        Math.round(d.intervalSec/60)+' minutes and repairs what it can: a price feed that came '+
+        'back, a background thread that died, a broker connection that dropped, or a journal entry '+
+        'still marked open for a position the broker no longer holds. '+
+        'It never invents data and it never trades to fix anything.</p>';
+  h+='<div class="heat-stats">'+
+     '<div class="heat-stat"><b>'+d.repairs+'</b><span>REPAIRS MADE</span></div>'+
+     '<div class="heat-stat"><b>'+(d.degraded||[]).length+'</b><span>DEGRADED NOW</span></div>'+
+     '<div class="heat-stat"><b>'+(d.running?'ON':'OFF')+'</b><span>AUTO-HEAL</span></div>'+
+     '<div class="heat-stat"><b>'+when(d.lastRun)+'</b><span>LAST SWEEP</span></div></div>';
+
+  if((d.degraded||[]).length){
+    h+='<h2 style="font-size:11px;letter-spacing:2px;color:var(--amber);margin:14px 0 6px">'+
+       'CURRENTLY ON FALLBACK DATA</h2>';
+    d.degraded.forEach(x=>{
+      h+='<div class="hl-row"><span class="k">'+esc(x.symbol)+'</span>'+
+         '<span class="hl-bad">'+esc(x.reason||'fetch failed')+'</span>'+
+         '<span class="t">'+x.failures+' fail'+(x.failures>1?'s':'')+
+         ' · retry in '+Math.round(x.retryInSec)+'s</span>'+
+         '<button class="btn-x" onclick="retryFeed(\''+esc(x.symbol)+'\')">Retry now</button></div>';
+    });
+  }
+  h+='<h2 style="font-size:11px;letter-spacing:2px;color:var(--cyan);margin:14px 0 6px">EVENT LOG</h2>';
+  if(!(d.log||[]).length){ h+='<div class="hl-row"><span class="hl-ok">Nothing has broken yet.</span></div>'; }
+  (d.log||[]).forEach(e=>{
+    h+='<div class="hl-row"><span class="k">'+esc(e.kind.toUpperCase())+'</span>'+
+       '<span class="'+(e.healed?'hl-ok':'hl-bad')+'">'+(e.healed?'✔ ':'⚠ ')+esc(e.detail)+'</span>'+
+       '<span class="t">'+when(e.at)+'</span></div>';
+  });
+  h+='</div>';
+  body.innerHTML=h;
+}
+
 let NOTIFY=false, SEEN=new Set(), BELL=0, HALTED=false;
 let LAST_ALERTS={priceAlerts:[], recent:[], lossLimit:null, dayPl:null, halted:false};
 function openAlerts(){ $('alrt-modal').classList.add('open'); renderAlerts(); loadAlerts();
@@ -1737,7 +1982,11 @@ async function delPriceAlert(id){
 
 function wireControls(){
   // scanner + blotter + journal + alerts: Escape closes, backdrop click closes
-  document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeScanner(); closeBlotter(); closeJournal(); closeAlerts(); } });
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeScanner(); closeBlotter(); closeJournal(); closeAlerts(); closeHeat(); closeHealth(); } });
+  $('heat-modal').addEventListener('click', e=>{ if(e.target.id==='heat-modal') closeHeat(); });
+  $('hlth-modal').addEventListener('click', e=>{ if(e.target.id==='hlth-modal') closeHealth(); });
+  pollHealth();                       // colour the chip on load
+  setInterval(pollHealth, 120000);    // and keep it honest, cheaply
   $('scan-modal').addEventListener('click', e=>{ if(e.target.id==='scan-modal') closeScanner(); });
   $('blot-modal').addEventListener('click', e=>{ if(e.target.id==='blot-modal') closeBlotter(); });
   $('jrnl-modal').addEventListener('click', e=>{ if(e.target.id==='jrnl-modal') closeJournal(); });
@@ -1860,6 +2109,45 @@ boot();
       <button class="btn-x" onclick="closeAlerts()">✕ Close</button>
     </div>
     <div class="blot-body" id="alrt-body"></div>
+  </div>
+</div>
+
+<div class="modal" id="heat-modal">
+  <div class="modal-box heat-box">
+    <div class="modal-head">
+      <h3>🔥 Heatmap</h3>
+      <div class="seg" id="heat-seg">
+        <button class="on" data-view="regime" onclick="heatView('regime')">Regime map</button>
+        <button data-view="signal" onclick="heatView('signal')">Signal map</button>
+        <button data-view="correlation" onclick="heatView('correlation')">Correlation</button>
+      </div>
+      <select id="heat-scope" class="heat-scope" onchange="loadHeat()"
+              title="Which set of symbols to map">
+        <option value="watchlist">Watchlist</option>
+        <option value="megacap">Mega caps</option>
+        <option value="midcap">Mid caps</option>
+        <option value="sector">Sectors</option>
+        <option value="crypto">Crypto</option>
+        <option value="market">Whole market scan list</option>
+      </select>
+      <div class="spacer"></div>
+      <button class="btn-x" onclick="loadHeat()">⟳ Refresh</button>
+      <button class="btn-x" onclick="closeHeat()">✕ Close</button>
+    </div>
+    <div class="blot-body" id="heat-body"></div>
+  </div>
+</div>
+
+<div class="modal" id="hlth-modal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>🩺 Self-Healing</h3>
+      <div class="spacer"></div>
+      <button class="btn-x" onclick="healNow()">⚕ Heal now</button>
+      <button class="btn-x" onclick="loadHealth()">⟳ Refresh</button>
+      <button class="btn-x" onclick="closeHealth()">✕ Close</button>
+    </div>
+    <div class="blot-body" id="hlth-body"></div>
   </div>
 </div>
 
