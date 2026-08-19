@@ -81,6 +81,7 @@ class MarketSweep:
         self.universe: list[str] = []
         self.cycle = 0
         self.scanned = 0
+        self.skipped = 0
         self.last_chunk: float | None = None
         self.started: float | None = None
         self.last_error: str | None = None
@@ -123,6 +124,31 @@ class MarketSweep:
             waited += IDLE_POLL
 
     # ── one chunk ───────────────────────────────────────────────────────────
+    # A regime read on a symbol you could never fill is wasted work and, worse,
+    # clutters the leaderboard with names that look good and cannot be traded.
+    MIN_PRICE = 3.0
+    MIN_BARS = 300          # roughly fourteen months — enough to label regimes
+
+    def tradable_enough(self, frame) -> bool:
+        """Cheap liquidity screen applied after the bars arrive.
+
+        Price and history length only. Alpaca's daily bars carry volume, but the
+        engine does not use it elsewhere and a price floor plus a history floor
+        already removes the shells, the sub-dollar names and the recent listings
+        that have no past to count.
+        """
+        if frame is None:
+            # Nothing in hand to judge by — demo mode, or a path that fetches
+            # per-symbol later. Absence of data is not evidence of illiquidity,
+            # so let it through and let the scorer decide.
+            return True
+        if len(frame) < self.MIN_BARS:
+            return False
+        try:
+            return float(frame["Close"].iloc[-1]) >= self.MIN_PRICE
+        except Exception:  # noqa: BLE001
+            return False
+
     def run_chunk(self) -> dict:
         """Fetch, score and then forget one chunk. Returns what it did."""
         from .scanner import score_symbols
@@ -142,15 +168,21 @@ class MarketSweep:
         self.yield_to_user()
         self.state.prefetch_ohlc(batch)
 
+        # Drop the untradable before paying to score them. This is the cheapest
+        # possible filter and it runs on data already in hand.
+        worth = [s for s in batch
+                 if self.tradable_enough((self.state._ohlc_cache.get(s) or (0, None, ""))[1])]
+        self.skipped += len(batch) - len(worth)
+
         # Score in small slices, standing aside between each. Scoring the whole
         # chunk in one go is what made the terminal stutter: the sweep has all
         # day, the person using it does not.
         rows = []
-        for i in range(0, len(batch), SLICE):
+        for i in range(0, len(worth), SLICE):
             if self._stop.is_set():
                 break
             self.yield_to_user()
-            rows.extend(score_symbols(self.state, batch[i: i + SLICE], workers=WORKERS) or [])
+            rows.extend(score_symbols(self.state, worth[i: i + SLICE], workers=WORKERS) or [])
 
         with self._lock:
             for r in rows:
@@ -308,6 +340,7 @@ class MarketSweep:
             "progress": round(self.cursor / size, 4) if size else 0.0,
             "cycle": self.cycle,
             "scanned": self.scanned,
+            "skipped": self.skipped,
             "boardSize": len(self.board),
             "lastChunk": self.last_chunk,
             "started": self.started,

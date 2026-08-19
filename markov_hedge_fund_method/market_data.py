@@ -96,7 +96,7 @@ def _alpaca_bars(ticker: str, years: int, api_key: str, api_secret: str) -> pd.D
 
 
 def batch_alpaca_ohlc(symbols: list[str], years: int, api_key: str, api_secret: str,
-                      chunk: int = 200) -> dict[str, pd.DataFrame]:
+                      chunk: int = 200, since=None) -> dict[str, pd.DataFrame]:
     """Daily OHLC for many symbols at once.
 
     This is the difference between scanning a hundred names and scanning the
@@ -120,7 +120,13 @@ def batch_alpaca_ohlc(symbols: list[str], years: int, api_key: str, api_secret: 
         return {}
 
     client = StockHistoricalDataClient(api_key, api_secret)
-    start = (pd.Timestamp.now(tz="UTC").normalize() - pd.DateOffset(years=years)).to_pydatetime()
+    # `since` turns a full history download into a top-up. Re-fetching a decade
+    # to learn about yesterday is the single most wasteful thing the sweep did.
+    if since is not None:
+        start = pd.Timestamp(since).tz_localize(None).tz_localize("UTC").to_pydatetime()
+    else:
+        start = (pd.Timestamp.now(tz="UTC").normalize()
+                 - pd.DateOffset(years=years)).to_pydatetime()
     out: dict[str, pd.DataFrame] = {}
 
     for i in range(0, len(equities), chunk):

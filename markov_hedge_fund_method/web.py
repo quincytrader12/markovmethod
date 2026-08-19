@@ -24,6 +24,8 @@ annotations (from that future import) break body/Request detection here.
 
 import os
 import time
+
+import pandas as pd
 from dataclasses import replace
 
 from .accounts import AccountStore
@@ -220,6 +222,8 @@ class AppState:
         self.watcher = ScanWatcher(self)
         from .healing import Healer
         self.healer = Healer(self)
+        from .pricestore import PriceStore
+        self.prices = PriceStore()
         from .sweep import MarketSweep
         self.sweep = MarketSweep(self)
         # Symbols the user is actually looking at, so the full-market sweep does
@@ -566,18 +570,22 @@ class AppState:
         return time.monotonic() - self.last_activity
 
     def prefetch_ohlc(self, symbols: list) -> dict:
-        """Bulk-download price history for a whole universe in a few requests.
+        """Get a universe's price history ready, downloading as little as possible.
 
-        Fetching one symbol at a time is what limited the scanner to a hundred
-        names: a thousand symbols meant a thousand round-trips. Alpaca's bars
-        endpoint takes a list, so the same thousand costs five. Everything lands
-        in the shared OHLC cache, and the scan that follows is pure arithmetic
-        on data already in memory.
+        Three tiers, cheapest first. Anything already in the in-memory cache is
+        left alone. Anything the disk store holds is loaded from there and topped
+        up with only the days since it was last seen. Only genuinely new symbols
+        cost a full history download.
 
-        Best-effort by design. Anything this misses is simply fetched the old
-        way by whoever needs it, so a failure here is slow, never wrong.
+        That last distinction is the whole point. Re-fetching ten years for every
+        symbol on every pass was roughly 900MB and, on a rate-limited plan, the
+        bulk of a sweep's wall-clock — to learn about one new trading day.
+
+        Best-effort by design. Anything this misses is fetched the old way by
+        whoever needs it, so a failure here is slow, never wrong.
         """
-        stats = {"requested": 0, "cached": 0, "fetched": 0, "missed": 0}
+        stats = {"requested": 0, "cached": 0, "restored": 0, "toppedUp": 0,
+                 "fetched": 0, "missed": 0}
         if self.demo or not self.settings.has_credentials:
             return stats
         now = time.monotonic()
@@ -594,19 +602,62 @@ class AppState:
             todo.append(sym)
         if not todo:
             return stats
-        try:
-            from .market_data import batch_alpaca_ohlc
 
-            frames = batch_alpaca_ohlc(todo, self.settings.years,
-                                       self.settings.api_key, self.settings.api_secret)
-        except Exception:  # noqa: BLE001 — the per-symbol path still works
-            return stats
+        from .market_data import batch_alpaca_ohlc
+
+        # What the store already holds, and how stale each one is.
+        known = self.prices.known(todo)
+        cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
+        stale = sorted(s for s, d in known.items() if d < cutoff)
+        fresh = [s for s, d in known.items() if d >= cutoff]
+        missing = [s for s in todo if s not in known]
+
+        frames: dict = {}
+        for sym in fresh:                       # already current on disk
+            df = self.prices.get(sym)
+            if df is not None:
+                frames[sym] = df
+        stats["restored"] = len(frames)
+
+        # Top up the stale ones from their own last date. Grouping by date keeps
+        # each request asking for the narrowest window that covers its batch.
+        if stale:
+            oldest = min(known[s] for s in stale)
+            try:
+                updates = batch_alpaca_ohlc(
+                    stale, self.settings.years, self.settings.api_key,
+                    self.settings.api_secret, since=oldest)
+            except Exception:  # noqa: BLE001
+                updates = {}
+            for sym in stale:
+                base = self.prices.get(sym)
+                add = updates.get(sym)
+                if base is None:
+                    continue
+                if add is not None and not add.empty:
+                    self.prices.put(sym, add)
+                    merged = self.prices.get(sym)
+                    if merged is not None:
+                        base = merged
+                    stats["toppedUp"] += 1
+                frames[sym] = base
+
+        if missing:
+            try:
+                got = batch_alpaca_ohlc(missing, self.settings.years,
+                                        self.settings.api_key, self.settings.api_secret)
+            except Exception:  # noqa: BLE001 — the per-symbol path still works
+                got = {}
+            self.prices.put_many(got)
+            frames.update(got)
+            stats["fetched"] = len(got)
+
         for sym, df in frames.items():
             self._ohlc_cache[sym] = (time.monotonic(), df, "live")
             self.healer.note_fetch(sym, True)
             for c in (self._state_cache, self._state_vol_cache, self._state_meta_cache):
                 c.pop(sym, None)
-        stats["fetched"] = len(frames)
+        self.prices.flush()
         stats["missed"] = len(todo) - len(frames)
         return stats
 

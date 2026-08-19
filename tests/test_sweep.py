@@ -438,3 +438,24 @@ def test_startup_no_longer_prewarms_the_curated_universe():
     src = inspect.getsource(web.main)
     assert 'state.prewarm("market"' not in src
     assert "state.sweep.start()" in src, "nothing replaced it"
+
+
+# ── the liquidity screen ────────────────────────────────────────────────────
+def test_illiquid_and_new_listings_are_skipped_before_scoring():
+    from markov_hedge_fund_method.market_data import synthetic_ohlc
+    sweep = _state().sweep
+    assert sweep.tradable_enough(synthetic_ohlc(600)) is True
+    assert sweep.tradable_enough(synthetic_ohlc(600) * 0.001) is False, "penny stock"
+    assert sweep.tradable_enough(synthetic_ohlc(50)) is False, "too little history"
+
+
+def test_missing_data_is_not_treated_as_illiquid():
+    """Absence of evidence is not evidence — it must fall through to the scorer,
+    or demo mode and the per-symbol path would score nothing at all."""
+    assert _state().sweep.tradable_enough(None) is True
+
+
+def test_the_sweep_reports_what_it_skipped():
+    state = _state()
+    state.sweep.run_chunk()
+    assert "skipped" in state.sweep.status()
