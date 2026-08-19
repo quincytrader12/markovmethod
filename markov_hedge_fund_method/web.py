@@ -163,6 +163,7 @@ class AppState:
         self._scan_cache: dict[str, tuple[float, list]] = {}
         self._ohlc_cache: dict[str, tuple[float, object, str]] = {}
         self._state_vol_cache: dict[str, tuple[float, dict]] = {}
+        self._state_meta_cache: dict[str, tuple[float, dict]] = {}
         self._news_cache: dict[str, tuple[float, list]] = {}
         self._alpaca_symbols: set[str] | None = None
         self._alpaca_names: dict[str, str] = {}
@@ -176,6 +177,7 @@ class AppState:
         self.broker = None if self.demo else make_broker(self.settings)
         self._state_cache.clear()   # a new account may change the data source
         self._state_vol_cache.clear()
+        self._state_meta_cache.clear()
         self._scan_cache.clear()
         self._regperf_cache.clear()
         self._ohlc_cache.clear()
@@ -319,23 +321,37 @@ class AppState:
             return (synthetic_intraday(tf, seed=_seed(symbol)),
                     f"synthetic (intraday unavailable — {exc})")
 
-    def state_payload(self, symbol: str, *, with_vol: bool = False) -> dict:
+    # The meta-labelling forest is the one genuinely slow thing in the app —
+    # seconds per symbol, versus milliseconds for everything else. It gets its
+    # own cache and a long TTL, and nothing reaches it unless the user opens the
+    # panel that asks for it.
+    META_TTL = 900.0
+
+    def state_payload(self, symbol: str, *, with_vol: bool = False,
+                      with_meta: bool = False) -> dict:
         """HUD payload for a symbol, memoised with a short TTL.
 
         The HAR volatility forecast costs ~6x the rest of the payload combined,
         and only the focused chart uses it — the scanner, watchlist quotes and
         alerts never touch it. So it is off by default and cached separately,
         which keeps a 100-symbol scan from paying for 100 forecasts it discards.
+        The meta-labelling forest is slower still and follows the same rule, one
+        tier further out.
         """
-        cache = self._state_vol_cache if with_vol else self._state_cache
+        if with_meta:
+            cache, ttl = self._state_meta_cache, self.META_TTL
+        elif with_vol:
+            cache, ttl = self._state_vol_cache, self.ttl
+        else:
+            cache, ttl = self._state_cache, self.ttl
         cached = cache.get(symbol)
-        if cached and (time.monotonic() - cached[0]) < self.ttl:
+        if cached and (time.monotonic() - cached[0]) < ttl:
             return cached[1]
         df, source = self.ohlc_for(symbol)
         close = df["Close"]
         payload = market_state(close, symbol, window=self.settings.window,
                                threshold=self.settings.threshold, strategy=self.settings.strategy,
-                               ohlc=df, with_vol=with_vol)
+                               ohlc=df, with_vol=with_vol or with_meta, with_meta=with_meta)
         payload["dataSource"] = source
         payload["name"] = self.name_for(symbol)
         cache[symbol] = (time.monotonic(), payload)
@@ -486,6 +502,53 @@ def create_app(state: AppState):
     def state_endpoint(symbol: str = "SPY"):
         symbol = symbol.strip().upper() or "SPY"
         return state.state_payload(symbol, with_vol=True)
+
+    @app.get("/api/meta-label")
+    def meta_label_endpoint(symbol: str = "SPY"):
+        """The meta-labelling forest for one symbol — on demand, never implicit.
+
+        Returns the third equity curve next to the two it has to beat, and the
+        deflated Sharpe of each. Deflation is the point: the filter is one of
+        several variants tried on the same history, so its Sharpe is compared
+        against what the best of that many noise draws would have produced. A
+        filter that only wins before deflation has not won.
+        """
+        from .sharpe_stats import deannualize, deflated_sharpe, verdict as _verdict
+
+        symbol = symbol.strip().upper() or "SPY"
+        payload = state.state_payload(symbol, with_meta=True)
+        m = payload.get("metrics", {})
+        meta = m.get("meta")
+        skew, kurt = m.get("skew", 0.0), m.get("kurtosis", 3.0)
+        n_trials, s_var = 3, 0.25   # base, vol-targeted, meta-labelled
+
+        def dsr(sharpe, n_obs):
+            if sharpe is None or not n_obs or n_obs < 3:
+                return None
+            p = deflated_sharpe(deannualize(sharpe), int(n_obs), n_trials, s_var,
+                                skew=skew, kurtosis=kurt)
+            return {"dsr": round(p, 4), "verdict": _verdict(p)}
+
+        base_dsr = dsr(m.get("sharpe"), m.get("nObs"))
+        meta_dsr = dsr(None if not meta else meta.get("sharpe"),
+                       None if not meta else meta.get("nTrades"))
+        beats = bool(meta and meta.get("sharpe") is not None
+                     and m.get("sharpe") is not None
+                     and meta["sharpe"] > m["sharpe"]
+                     and meta_dsr and base_dsr
+                     and meta_dsr["dsr"] >= base_dsr["dsr"])
+        return {
+            "symbol": symbol,
+            "dataSource": payload.get("dataSource"),
+            "base": {"sharpe": m.get("sharpe"), "maxDrawdown": m.get("maxDrawdown"),
+                     "winRate": m.get("winRate"), "nObs": m.get("nObs"),
+                     "equity": m.get("equity", []), "equityIndex": m.get("equityIndex", []),
+                     **(base_dsr or {})},
+            "vt": m.get("vt"),
+            "meta": None if not meta else {**meta, **(meta_dsr or {})},
+            # The deployment gate, computed here rather than left to the eye.
+            "beatsBase": beats,
+        }
 
     @app.get("/api/candles")
     def candles(symbol: str = "SPY", tf: str = "1D"):

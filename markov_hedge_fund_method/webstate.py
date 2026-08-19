@@ -24,6 +24,7 @@ from .regime import (
     walk_forward_backtest,
 )
 from .har import vol_forecast_for
+from .meta_label import meta_probabilities
 from .sharpe_stats import deannualize, probabilistic_sharpe, verdict
 
 _REGIME_KEY = {0: "bear", 1: "sideways", 2: "bull"}
@@ -182,7 +183,7 @@ def quote_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: f
 def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: float = 0.02,
                  strategy: Strategy = Strategy.FILTER, tail: int = 520,
                  include_metrics: bool = True, ohlc: pd.DataFrame | None = None,
-                 with_vol: bool = True) -> dict:
+                 with_vol: bool = True, with_meta: bool = False) -> dict:
     """Full HUD payload for one symbol from its close series.
 
     `tail` is how many recent bars of chart series to send — large enough that
@@ -250,7 +251,20 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
         except Exception:  # noqa: BLE001 — sizing is optional, never fatal
             vol_fc = None
 
-    metrics = walk_forward_backtest(close, labels, vol_forecast=vol_fc) if include_metrics else {
+    # Meta-labelling forest — expensive (seconds, not milliseconds) and never on
+    # the scanner or watchlist path. Opt-in per request, cached separately.
+    meta_res = None
+    if include_metrics and with_meta:
+        try:
+            meta_res = meta_probabilities(close, labels, vol_forecast=vol_fc)
+        except Exception:  # noqa: BLE001 — a filter failing must not blank the HUD
+            meta_res = None
+
+    metrics = walk_forward_backtest(
+        close, labels, vol_forecast=vol_fc,
+        meta_prob=None if meta_res is None else meta_res["prob"],
+        meta_threshold=0.5 if meta_res is None else meta_res["threshold"],
+    ) if include_metrics else {
         "sharpe": float("nan"), "max_drawdown": float("nan"), "n_trades": 0,
         "win_rate": float("nan"), "equity": [], "equity_index": []}
     eq, eq_idx = _downsample(metrics.get("equity", []), metrics.get("equity_index", []))
@@ -267,6 +281,29 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
             "avgLeverage": None if pd.isna(vt_raw["avg_leverage"]) else round(vt_raw["avg_leverage"], 2),
             "targetVol": vt_raw["target_vol"],
             "leverageCap": vt_raw["leverage_cap"],
+        }
+
+    meta_raw = metrics.get("meta")
+    meta_block = None
+    if meta_raw and meta_res is not None:
+        m_eq, _ = _downsample(meta_raw.get("equity", []), meta_raw.get("equity_index", []))
+        imp = sorted(meta_res["importances"].items(), key=lambda kv: -kv[1])
+        prob = meta_res["prob"]
+        meta_block = {
+            "sharpe": None if pd.isna(meta_raw["sharpe"]) else round(meta_raw["sharpe"], 3),
+            "maxDrawdown": None if pd.isna(meta_raw["max_drawdown"]) else round(meta_raw["max_drawdown"], 4),
+            "winRate": None if pd.isna(meta_raw["win_rate"]) else round(meta_raw["win_rate"], 4),
+            "equity": m_eq,
+            "nTrades": meta_raw["n_trades"],
+            "takeRate": None if pd.isna(meta_raw["take_rate"]) else round(meta_raw["take_rate"], 4),
+            "threshold": round(float(meta_res["threshold"]), 4),
+            "cvAuc": round(float(meta_res["cvAuc"]), 4),
+            # False means cross-validation found no skill, so the forest stood
+            # down and this curve is the base curve — not a failure, a refusal.
+            "active": bool(meta_res["active"]),
+            "nTrain": meta_res["nTrain"],
+            "importances": [{"name": k, "share": round(v, 4)} for k, v in imp[:6]],
+            "pWinNow": None if not len(prob) else round(float(prob.iloc[-1]), 4),
         }
 
     # Today's forecast for tomorrow's volatility, annualised.
@@ -328,6 +365,8 @@ def market_state(close: pd.Series, ticker: str, *, window: int = 20, threshold: 
             "kurtosis": round(float(metrics.get("kurtosis", 3.0)), 3),
             # Vol-targeted variant, shown next to the plain curve for comparison
             "vt": vt_block,
+            # Meta-labelled variant — only present when the caller asked for it
+            "meta": meta_block,
         },
         "volForecast": vol_now,
     }

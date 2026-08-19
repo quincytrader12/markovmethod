@@ -162,6 +162,8 @@ def walk_forward_backtest(
     vol_forecast: pd.Series | None = None,
     target_vol: float = 0.15,
     leverage_cap: float = 2.0,
+    meta_prob: pd.Series | None = None,
+    meta_threshold: float = 0.5,
 ) -> dict:
     """Walk-forward: at each day t, fit the matrix on labels up to t-1,
     derive the signal from the current state, hold for one day, score.
@@ -194,8 +196,17 @@ def walk_forward_backtest(
     if vol_forecast is not None and len(vol_forecast):
         vf = vol_forecast.reindex(labels.index).to_numpy(dtype=float)
 
+    # Optional meta-labelling filter: the direction is unchanged, but a day the
+    # forest scores below the threshold is skipped entirely. Aligned by date, so
+    # a probability is only ever applied on the day it was produced for.
+    mp = None
+    if meta_prob is not None and len(meta_prob):
+        mp = meta_prob.reindex(labels.index).to_numpy(dtype=float)
+
     strategy_returns = []
     vt_returns = []
+    meta_returns = []
+    meta_taken = []
     leverages = []
     equity_dates = []
     for t in range(min_train, len(lab) - 1):
@@ -214,6 +225,14 @@ def walk_forward_backtest(
                 scale = min(target_vol / sigma, leverage_cap)
             leverages.append(scale)
             vt_returns.append(position * scale * r_next)
+        if mp is not None:
+            # No probability for this day means the forest has no opinion yet
+            # (its warm-up window). Absence of an opinion is not a reason to
+            # skip a trade the chain already chose, so the default is to take it.
+            p = mp[t]
+            take = bool((not np.isfinite(p)) or p >= meta_threshold)
+            meta_taken.append(1.0 if take else 0.0)
+            meta_returns.append(position * r_next if take else 0.0)
         equity_dates.append(labels.index[t + 1])
 
     sr = np.array(strategy_returns, dtype=float)
@@ -271,6 +290,27 @@ def walk_forward_backtest(
             "avg_leverage": float(np.mean(leverages)) if leverages else float("nan"),
             "target_vol": float(target_vol),
             "leverage_cap": float(leverage_cap),
+        }
+
+    # Meta-labelled variant — same direction, fewer trades. Reported next to the
+    # other two so the filter has to prove it earns its place on your own data.
+    if meta_returns:
+        mr = np.array(meta_returns, dtype=float)
+        mr_sd = mr.std(ddof=1)
+        mr_equity = (1.0 + mr).cumprod()
+        mr_run_max = np.maximum.accumulate(mr_equity)
+        mr_dd = (mr_equity - mr_run_max) / mr_run_max
+        mr_acted = mr[mr != 0.0]
+        out["meta"] = {
+            "sharpe": (float(mr.mean() / mr_sd * np.sqrt(252))
+                       if mr_sd > 0 and np.isfinite(mr_sd) else float("nan")),
+            "max_drawdown": float(mr_dd.min()) if len(mr_dd) else float("nan"),
+            "win_rate": float((mr_acted > 0).mean()) if len(mr_acted) else float("nan"),
+            "equity": mr_equity.tolist(),
+            "equity_index": out["equity_index"],
+            "n_trades": int(len(mr_acted)),
+            "take_rate": float(np.mean(meta_taken)) if meta_taken else float("nan"),
+            "threshold": float(meta_threshold),
         }
     return out
 
