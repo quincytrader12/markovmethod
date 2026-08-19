@@ -18,8 +18,11 @@ SOURCE = HTML.read_text(encoding="utf-8")
 STYLE = SOURCE.split("<style>", 1)[1].split("</style>", 1)[0]
 SCRIPT = SOURCE.split("<style>", 1)[0] + SOURCE.split("</style>", 1)[1]
 
-# The four neon accents, which are supposed to be loud.
-NEON = {"#38f0e0", "#7ef9ee", "#2fe08a", "#ff4d5e", "#f5c451", "#f5834d", "#9fe06a"}
+# Colours that are supposed to be loud: the neon blue accent, and the semantic
+# data colours. Everything else is chrome and must stay quiet.
+ACCENT = {"#4da3ff", "#9ccfff"}
+DATA = {"#2fe08a", "#ff4d5e", "#f5c451", "#f5834d", "#9fe06a"}
+NEON = ACCENT | DATA
 
 
 def _hsl(h: str):
@@ -33,15 +36,20 @@ def _colours(text: str):
 
 
 def test_no_saturated_blue_surfaces_anywhere():
-    """The complaint that started this: blue surfaces everywhere, and too loud."""
+    """The complaint that started this: blue *surfaces*, not blue accents.
+
+    Neon blue is now the accent, so blue itself is no longer the problem —
+    blue fills are. A surface is a dark colour; anything dark that carries real
+    saturation is a tinted panel and has to go.
+    """
     offenders = []
     for c in _colours(SOURCE):
         if c in NEON:
             continue
         hue, sat, lum = _hsl(c)
-        if 190 <= hue <= 260 and sat > 0.20:
+        if lum < 0.45 and 190 <= hue <= 260 and sat > 0.20:
             offenders.append((c, round(hue), round(sat, 2)))
-    assert not offenders, f"saturated blue is back: {sorted(offenders)}"
+    assert not offenders, f"blue surfaces are back: {sorted(offenders)}"
 
 
 def test_surfaces_are_effectively_neutral():
@@ -57,11 +65,36 @@ def test_surfaces_are_effectively_neutral():
 
 
 def test_the_neon_survived():
-    """Toning down the base must not have flattened the data colours."""
-    for accent in ("#38f0e0", "#2fe08a", "#ff4d5e", "#f5c451"):
-        assert accent in SOURCE.lower(), f"{accent} went missing"
-        _, sat, _ = _hsl(accent)
-        assert sat > 0.6, f"{accent} lost its punch"
+    """Toning down the base must not have flattened the accent or the data."""
+    for c in ("#4da3ff", "#2fe08a", "#ff4d5e", "#f5c451"):
+        assert c in SOURCE.lower(), f"{c} went missing"
+        _, sat, _ = _hsl(c)
+        assert sat > 0.6, f"{c} lost its punch"
+
+
+def test_green_and_red_still_mean_up_and_down():
+    """Direction must stay readable at a glance. If bull/bear both went blue and
+    silver, the fastest signal on the screen would be gone."""
+    m = re.search(r"const C = \{([^}]*)\}", SCRIPT)
+    bull = re.search(r"bull:'(#[0-9a-fA-F]{6})'", m.group(1)).group(1)
+    bear = re.search(r"bear:'(#[0-9a-fA-F]{6})'", m.group(1)).group(1)
+    assert 90 <= _hsl(bull)[0] <= 170, "bull is no longer green"
+    assert _hsl(bear)[0] >= 330 or _hsl(bear)[0] <= 20, "bear is no longer red"
+
+
+def test_the_metallic_silver_tier_exists():
+    """Silver carries headings and frames so the accent is not a wall."""
+    for var in ("--silver", "--silver2"):
+        m = re.search(re.escape(var) + r":\s*(#[0-9a-fA-F]{6})", STYLE)
+        assert m, f"{var} is not declared"
+        _, sat, lum = _hsl(m.group(1))
+        assert sat < 0.20, f"{var} is a colour, not a metal"
+        assert lum > 0.30, f"{var} is too dark to read as silver"
+
+
+def test_panel_headings_are_silver_not_accent():
+    head = re.search(r"\.panel h2\{[^}]*\}", STYLE).group(0)
+    assert "--silver" in head, "headings went back to the accent colour"
 
 
 def test_the_base_is_dark_grey_not_near_black():
@@ -103,7 +136,8 @@ def test_the_chart_palette_matches_the_stylesheet():
         if c in NEON:
             continue
         hue, sat, lum = _hsl(c)
-        assert not (190 <= hue <= 260 and sat > 0.20), f"chart colour {c} is still navy"
+        assert not (lum < 0.45 and 190 <= hue <= 260 and sat > 0.20), \
+            f"chart colour {c} is still navy"
 
 
 def test_the_moving_average_lines_are_not_shouting():
@@ -115,9 +149,10 @@ def test_the_moving_average_lines_are_not_shouting():
         assert not (240 <= hue <= 290), f"{c} is a violet reference line"
 
 
-def test_there_is_only_one_accent_cyan():
-    """Two different cyans read as a blue glow fighting a teal one."""
-    assert "0,229,255" not in SOURCE, "the blue cyan is back alongside the teal one"
+def test_there_is_only_one_accent():
+    """Multiple accent hues read as glows fighting each other."""
+    assert "0,229,255" not in SOURCE, "a second accent cyan is back"
+    assert "56,240,224" not in SOURCE, "the old teal accent is back alongside the blue"
 
 
 def test_the_scanline_overlay_is_neutral():

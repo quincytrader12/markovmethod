@@ -7,7 +7,12 @@
 <style>
   :root{
     --bg:#141415; --panel:#1a1b1c; --panel2:#202122; --grid:#292a2c;
-    --edge:#353638; --cyan:#38f0e0; --cyan2:#7ef9ee; --green:#2fe08a; --red:#ff4d5e;
+    --edge:#3a3d42;
+    /* Neon blue is the single live accent; silver is the metallic chrome tier
+       that carries labels, headings and borders without competing with it. */
+    --cyan:#4da3ff; --cyan2:#9ccfff;
+    --silver:#c6ccd4; --silver2:#868d96; --silver-lo:#5c626a;
+    --green:#2fe08a; --red:#ff4d5e;
     --amber:#f5c451; --ink:#e8eaed; --dim:#9ba1a9; --dim2:#6d727a; --glow:0 0 8px;
     /* Readable UI face for words; monospace kept for numbers so columns line up. */
     --ui:"Inter","Segoe UI Variable Text","Segoe UI",-apple-system,BlinkMacSystemFont,
@@ -46,8 +51,10 @@
     border-bottom:1px solid var(--edge);
     background:linear-gradient(180deg,#1e1f20, #181819);
   }
-  .brand{font-weight:700; letter-spacing:3px; color:var(--cyan);
-    text-shadow:var(--glow) var(--cyan); font-size:16px; white-space:nowrap}
+  .brand{font-weight:700; letter-spacing:3px; font-size:16px; white-space:nowrap;
+    background:linear-gradient(180deg,#ffffff 0%,var(--silver) 40%,var(--silver2) 70%,#eef3f8 100%);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+    filter:drop-shadow(0 0 7px rgba(77,163,255,.55))}
   .brand small{color:var(--dim); letter-spacing:2px; font-weight:400; font-size:10px}
   .topbar .spacer{flex:1}
   .chip{border:1px solid var(--edge); border-radius:3px; padding:3px 8px; color:var(--dim);
@@ -68,15 +75,17 @@
 
   /* opportunity scanner */
   .scan-btn{cursor:pointer; border-color:var(--cyan); color:var(--cyan); font-weight:700}
-  .scan-btn:hover{box-shadow:0 0 12px rgba(56,240,224,.35)}
+  .scan-btn:hover{box-shadow:0 0 12px rgba(77,163,255,.35)}
   .modal{position:fixed; inset:0; background:rgba(10,10,11,.84); z-index:60;
     display:none; align-items:flex-start; justify-content:center}
   .modal.open{display:flex}
   .modal-box{margin-top:3.5vh; width:min(940px,95vw); max-height:92vh; display:flex; flex-direction:column;
     background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--cyan);
-    border-radius:6px; box-shadow:0 0 44px rgba(56,240,224,.18)}
+    border-radius:6px; box-shadow:0 0 44px rgba(77,163,255,.18)}
   .modal-head{display:flex; align-items:center; gap:10px; padding:11px 15px; border-bottom:1px solid var(--edge); flex:0 0 auto}
-  .modal-head h3{margin:0; font-size:13px; letter-spacing:2px; color:var(--cyan); text-transform:uppercase; white-space:nowrap}
+  .modal-head h3{margin:0; font-size:13px; letter-spacing:2px; text-transform:uppercase; white-space:nowrap;
+    background:linear-gradient(180deg,#eef1f5 0%,var(--silver) 45%,var(--silver2) 100%);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent}
   .modal-head .spacer{flex:1}
   .seg{display:flex; border:1px solid var(--edge); border-radius:3px; overflow:hidden}
   .seg button{background:#1b1b1c; border:0; color:var(--dim); font-family:inherit; font-size:10px;
@@ -156,7 +165,7 @@
   .scan-top .spacer{flex:1}
   .badge{font-size:10px; letter-spacing:1px; text-transform:uppercase; padding:2px 9px; border-radius:11px; font-weight:700}
   .badge.strong{background:rgba(0,255,140,.15); color:var(--green); border:1px solid var(--green)}
-  .badge.buy{background:rgba(56,240,224,.12); color:var(--cyan); border:1px solid var(--cyan)}
+  .badge.buy{background:rgba(77,163,255,.12); color:var(--cyan); border:1px solid var(--cyan)}
   .badge.watch{background:rgba(255,190,60,.12); color:var(--amber); border:1px solid var(--amber)}
   .badge.avoid{background:rgba(255,77,94,.12); color:var(--red); border:1px solid var(--red)}
   .scan-score{font-weight:700; font-size:17px; color:var(--cyan2); min-width:40px; text-align:right}
@@ -227,14 +236,14 @@
   .jadd button{background:#1b1b1c; border:1px solid var(--cyan); color:var(--cyan); border-radius:3px;
     padding:4px 11px; cursor:pointer; font-family:inherit; font-size:10px; letter-spacing:1px}
   .jadd button:hover{background:var(--cyan); color:#171719}
-  .jtag{display:inline-block; background:rgba(56,240,224,.1); color:var(--cyan2); border:1px solid var(--edge);
+  .jtag{display:inline-block; background:rgba(77,163,255,.1); color:var(--cyan2); border:1px solid var(--edge);
     border-radius:9px; padding:0 7px; font-size:9px; letter-spacing:.5px; margin:0 3px 2px 0; text-transform:uppercase}
 
   /* alerts + risk */
   .toast-wrap{position:fixed; top:14px; right:14px; z-index:80; display:flex; flex-direction:column;
     gap:8px; max-width:340px; pointer-events:none}
   .toast{border:1px solid var(--cyan); border-left:3px solid var(--cyan); background:linear-gradient(180deg,#1e1f20,#181819);
-    border-radius:4px; padding:9px 12px; color:var(--ink); font-size:12px; box-shadow:0 0 18px rgba(56,240,224,.18);
+    border-radius:4px; padding:9px 12px; color:var(--ink); font-size:12px; box-shadow:0 0 18px rgba(77,163,255,.18);
     transition:opacity .3s}
   .toast.bull{border-color:var(--green); border-left-color:var(--green)}
   .toast.bear{border-color:var(--red); border-left-color:var(--red); box-shadow:0 0 18px rgba(255,77,94,.22)}
@@ -268,9 +277,11 @@
     border:1px solid var(--edge); border-radius:4px; padding:9px 11px;
   }
   .panel::before,.panel::after{content:""; position:absolute; width:12px; height:12px; pointer-events:none}
-  .panel::before{top:-1px; left:-1px; border-top:2px solid var(--cyan); border-left:2px solid var(--cyan)}
-  .panel::after{bottom:-1px; right:-1px; border-bottom:2px solid var(--cyan); border-right:2px solid var(--cyan)}
-  .panel h2{margin:0 0 7px; font-size:11px; letter-spacing:2px; color:var(--cyan);
+  .panel::before{top:-1px; left:-1px; border-top:2px solid var(--silver2); border-left:2px solid var(--silver2)}
+  .panel::after{bottom:-1px; right:-1px; border-bottom:2px solid var(--silver2); border-right:2px solid var(--silver2)}
+  .panel h2{margin:0 0 7px; font-size:11px; letter-spacing:2px; color:var(--silver);
+    background:linear-gradient(180deg,#eef1f5 0%,var(--silver) 45%,var(--silver2) 100%);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
     text-transform:uppercase; display:flex; align-items:center; gap:8px; flex:0 0 auto}
   .panel h2 .tag{margin-left:auto; color:var(--dim); font-size:10px; letter-spacing:1px}
   /* a panel that expands to consume its column's leftover height */
@@ -280,7 +291,7 @@
   .search-wrap{position:relative; margin-bottom:8px}
   .search{width:100%; background:#18191a; border:1px solid var(--edge);
     color:var(--ink); border-radius:3px; padding:7px 9px; font-family:inherit; font-size:12px; letter-spacing:1px}
-  .search:focus{outline:none; border-color:var(--cyan); box-shadow:0 0 10px rgba(56,240,224,.2)}
+  .search:focus{outline:none; border-color:var(--cyan); box-shadow:0 0 10px rgba(77,163,255,.2)}
   .sugg-list{position:absolute; left:0; right:0; top:34px; z-index:60; background:#1c1c1e;
     border:1px solid var(--cyan); border-radius:3px; max-height:240px; overflow-y:auto; display:none;
     box-shadow:0 8px 24px rgba(0,0,0,.55)}
@@ -296,7 +307,7 @@
   .wl{display:flex; flex-direction:column; gap:3px; max-height:12vh; overflow-y:auto}
   .wl .item{position:relative; display:flex; align-items:center; gap:8px; width:100%;
     background:#1b1b1c; border:1px solid var(--edge); border-radius:3px}
-  .wl .item.active{border-color:var(--cyan); background:#202123; box-shadow:0 0 10px rgba(56,240,224,.15)}
+  .wl .item.active{border-color:var(--cyan); background:#202123; box-shadow:0 0 10px rgba(77,163,255,.15)}
   .wl .pick{
     display:flex; align-items:center; gap:8px; flex:1; text-align:left; cursor:pointer;
     background:transparent; border:0; color:var(--ink); border-radius:3px;
@@ -311,8 +322,8 @@
     background:#1b1b1c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
     padding:7px 9px; font-family:inherit; font-size:12px; letter-spacing:1px;
   }
-  .wl button:hover{border-color:var(--cyan); box-shadow:inset 0 0 12px rgba(56,240,224,.08)}
-  .wl button.active{border-color:var(--cyan); background:#202123; box-shadow:0 0 10px rgba(56,240,224,.15)}
+  .wl button:hover{border-color:var(--cyan); box-shadow:inset 0 0 12px rgba(77,163,255,.08)}
+  .wl button.active{border-color:var(--cyan); background:#202123; box-shadow:0 0 10px rgba(77,163,255,.15)}
   .wl .sym{font-weight:700}
   .wl .px{margin-left:auto; color:var(--dim2); font-variant-numeric:tabular-nums}
   .rchip{font-size:9px; padding:1px 6px; border-radius:10px; letter-spacing:1px; text-transform:uppercase}
@@ -361,7 +372,15 @@
     border-radius:3px; padding:3px 9px; font-family:inherit; font-size:11px; letter-spacing:1px}
   .tfbar button:hover{border-color:var(--cyan); color:var(--ink)}
   .tfbar button.on{color:var(--bg); background:var(--cyan); border-color:var(--cyan); font-weight:700}
-  canvas.px{width:100%; flex:1 1 0; min-height:110px; height:auto; display:block; transition:opacity .12s}
+  canvas.px{width:100%; flex:1 1 0; min-height:110px; height:auto; display:block; transition:opacity .12s;
+    cursor:crosshair; touch-action:none}
+  /* Only shown while the chart is actually zoomed or panned, so it doubles as
+     the signal that the view is no longer the full timeframe. */
+  .zoom-tag{display:none}
+  .zoom-tag.on{display:inline-block; margin-left:8px; padding:2px 8px; cursor:pointer;
+    border:1px solid var(--cyan); border-radius:3px; color:var(--cyan); background:rgba(77,163,255,.10);
+    font-family:var(--mono); font-size:10px; letter-spacing:1px; white-space:nowrap}
+  .zoom-tag.on:hover{background:rgba(77,163,255,.2)}
   .loading canvas.px{opacity:.35}
   /* news */
   .news{display:flex; flex-direction:column; gap:5px; max-height:13vh; overflow:auto; flex:0 0 auto}
@@ -399,7 +418,7 @@
     background:#1b1b1c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
     padding:4px 6px; font-family:inherit; font-size:12px; width:100%;
   }
-  input:focus,select:focus{outline:none; border-color:var(--cyan); box-shadow:0 0 8px rgba(56,240,224,.2)}
+  input:focus,select:focus{outline:none; border-color:var(--cyan); box-shadow:0 0 8px rgba(77,163,255,.2)}
   .row{display:flex; gap:6px; margin-top:6px}
   .afford{font-size:11px; color:var(--dim); margin-top:6px; display:flex; gap:12px; flex-wrap:wrap; flex:0 0 auto}
   .afford b{color:var(--cyan2)}
@@ -467,7 +486,7 @@
   @keyframes scroll{to{transform:translateX(-100%)}}
   .up{color:var(--green)} .down{color:var(--red)} .muted{color:var(--dim)}
   .radar{width:16px; height:16px; border-radius:50%; border:1px solid var(--cyan);
-    background:conic-gradient(from 0deg, rgba(56,240,224,.5), transparent 40%); animation:spin 3s linear infinite; box-shadow:var(--glow) var(--cyan)}
+    background:conic-gradient(from 0deg, rgba(77,163,255,.5), transparent 40%); animation:spin 3s linear infinite; box-shadow:var(--glow) var(--cyan)}
   @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
@@ -555,6 +574,8 @@
             <button data-tf="126" class="on">6M</button><button data-tf="252">1Y</button>
             <button data-tf="504">2Y</button>
           </span>
+          <span class="zoom-tag" id="zoom-tag" onclick="resetZoom()"
+                title="scroll to zoom · drag to pan · double-click to reset"></span>
         </div>
         <div class="sig" id="c-sig"></div>
         <canvas class="px" id="chart" width="1600" height="680"></canvas>
@@ -657,7 +678,7 @@
 </div>
 
 <script>
-const C = { bull:'#2fe08a', bear:'#ff4d5e', sideways:'#9198a0', cyan:'#38f0e0', dim:'#6d727a', grid:'#292a2c', ink:'#e8eaed', amber:'#f5c451' };
+const C = { bull:'#2fe08a', bear:'#ff4d5e', sideways:'#9198a0', cyan:'#4da3ff', dim:'#6d727a', grid:'#292a2c', ink:'#e8eaed', amber:'#f5c451' };
 let SYMBOL = 'SPY';
 let SIDE = 'buy';
 let CFG = {};
@@ -764,6 +785,7 @@ function selectSymbol(s, addToWatch){
   s=(s||'').toUpperCase(); if(!s) return;
   SYMBOL = s; if(addToWatch!==false) ensureWatchlist(s);
   markActive(s); $('o-symbol').value = s;
+  VIEW = null;                               // a new series starts unzoomed
   META_OVERRIDE=false;                       // a new symbol is a new decision
   loadState(false); loadNews(); loadPortfolio(); refreshMetaSizing();
 }
@@ -840,23 +862,100 @@ function moveSuggest(d){
   const hl=$('sugg-list').querySelector('.s.hl'); if(hl) hl.scrollIntoView({block:'nearest'});
 }
 
-/* ---------- timeframe (client-side slice — instant, no refetch) ---------- */
-function sliceChart(ch, n){
-  const s = a => a.slice(-n);
+/* ---------- timeframe + zoom (client-side — instant, no refetch) ----------
+   The timeframe buttons pick a starting window; scroll and drag move it. VIEW
+   is a half-open [start,end) range of bar indices into whichever series the
+   current timeframe is showing, so zooming is just narrowing that range and
+   panning is sliding it — no refetch either way. */
+const MIN_BARS = 20;
+let VIEW = null;                    // null = "whatever the timeframe implies"
+
+function sliceRange(ch, a, b){
+  const s = arr => (arr||[]).slice(a,b);
   return { bars:s(ch.bars), ma20:s(ch.ma20), ma50:s(ch.ma50), rsi:s(ch.rsi), momentum:s(ch.momentum) };
 }
-function renderChart(){
-  if(typeof TF === 'string'){                       // intraday (1D / 1W)
-    if(!INTRADAY) return;
+function chartSource(){
+  if(typeof TF === 'string'){
+    if(!INTRADAY) return null;
     const reg = LAST ? LAST.regime : 'sideways';
-    const ch = { bars: INTRADAY.bars.map(b=>({...b, regime:reg})),
-                 ma20:INTRADAY.ma20, ma50:INTRADAY.ma50, rsi:INTRADAY.rsi, momentum:INTRADAY.momentum };
-    drawChart(ch); drawMini('mom', ch.momentum, 0); drawMini('rsi', ch.rsi, 50);
-    return;
+    return { bars: INTRADAY.bars.map(b=>({...b, regime:reg})), ma20:INTRADAY.ma20,
+             ma50:INTRADAY.ma50, rsi:INTRADAY.rsi, momentum:INTRADAY.momentum };
   }
-  if(!LAST) return;
-  const ch = sliceChart(LAST.chart, TF);
+  return LAST ? LAST.chart : null;
+}
+function defaultSpan(n){ return typeof TF === 'string' ? n : Math.min(TF, n); }
+function clampView(n){
+  if(!VIEW) return;
+  // Enforce the minimum first, then cap to the data: the other order lets a
+  // series shorter than MIN_BARS claim a window wider than it actually has.
+  let span = Math.min(n, Math.max(MIN_BARS, Math.round(VIEW.end - VIEW.start)));
+  let start = Math.round(VIEW.start);
+  start = Math.max(0, Math.min(start, n - span));   // never scroll past the data
+  VIEW = {start, end:start + span};
+}
+function renderChart(){
+  const full = chartSource(); if(!full || !full.bars || !full.bars.length) return;
+  const n = full.bars.length;
+  if(!VIEW) VIEW = {start: Math.max(0, n - defaultSpan(n)), end: n};
+  clampView(n);
+  const ch = sliceRange(full, VIEW.start, VIEW.end);
   drawChart(ch); drawMini('mom', ch.momentum, 0); drawMini('rsi', ch.rsi, 50);
+  updateZoomTag(n);
+}
+function updateZoomTag(n){
+  const el = $('zoom-tag'); if(!el || !VIEW) return;
+  const span = VIEW.end - VIEW.start;
+  // "Zoomed" means the view differs from what this timeframe would show on its
+  // own — not merely that it is narrower than the whole history, which is true
+  // of every timeframe short of 2Y and would leave the chip permanently lit.
+  const zoomed = span !== defaultSpan(n) || VIEW.end !== n;
+  el.className = zoomed ? 'zoom-tag on' : 'zoom-tag';
+  el.textContent = zoomed ? `${span} bars · reset` : '';
+}
+function resetZoom(){ VIEW = null; renderChart(); }
+
+/* Scroll to zoom around the cursor, drag to pan, double-click to reset —
+   the gestures a chart is expected to answer to. */
+function initChartZoom(){
+  const cv = $('chart'); if(!cv) return;
+  const barsPerPx = () => {
+    const w = cv.clientWidth - PAD.l - PAD.r;
+    return VIEW ? (VIEW.end - VIEW.start) / Math.max(w, 1) : 0;
+  };
+  cv.addEventListener('wheel', e => {
+    const full = chartSource(); if(!full) return;
+    e.preventDefault();
+    const n = full.bars.length;
+    if(!VIEW) VIEW = {start: Math.max(0, n - defaultSpan(n)), end: n};
+    const span = VIEW.end - VIEW.start;
+    const r = cv.getBoundingClientRect();
+    const plot = r.width - PAD.l - PAD.r;
+    const frac = Math.max(0, Math.min(1, (e.clientX - r.left - PAD.l) / Math.max(plot, 1)));
+    const next = Math.min(n, Math.max(MIN_BARS, Math.round(span * (e.deltaY < 0 ? 0.82 : 1/0.82))));
+    // Keep the bar under the pointer under the pointer, the way a map zooms.
+    const anchor = VIEW.start + frac * span;
+    VIEW = {start: anchor - frac * next, end: anchor - frac * next + next};
+    clampView(n); renderChart();
+  }, {passive:false});
+
+  let drag = null;
+  cv.addEventListener('pointerdown', e => {
+    if(!VIEW) return;
+    drag = {x:e.clientX, start:VIEW.start, span:VIEW.end - VIEW.start, per:barsPerPx()};
+    cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing';
+  });
+  cv.addEventListener('pointermove', e => {
+    if(!drag) return;
+    const full = chartSource(); if(!full) return;
+    VIEW = {start: drag.start + (drag.x - e.clientX) * drag.per,
+            end:   drag.start + (drag.x - e.clientX) * drag.per + drag.span};
+    clampView(full.bars.length); renderChart();
+  });
+  const end = e => { if(!drag) return; drag = null; cv.style.cursor='crosshair';
+                     try{ cv.releasePointerCapture(e.pointerId); }catch(_){} };
+  cv.addEventListener('pointerup', end);
+  cv.addEventListener('pointercancel', end);
+  cv.addEventListener('dblclick', e => { e.preventDefault(); resetZoom(); });
 }
 function refreshChart(){
   if(typeof TF === 'string') loadIntraday();
@@ -881,7 +980,7 @@ async function loadIntraday(){
   if(card) card.classList.remove('loading');
 }
 function setTF(v, btn){
-  TF = v;
+  TF = v; VIEW = null;
   document.querySelectorAll('#tfbar button').forEach(b=>b.classList.toggle('on', b===btn));
   refreshChart();
 }
@@ -1082,11 +1181,16 @@ function chartCtx(id){
   const ctx = cv.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
   return {ctx,w,h};
 }
+/* One geometry for the plot area. The zoom handlers convert a pixel position
+   into a bar index, so they have to use exactly the padding the renderer used —
+   two copies of these numbers would put the cursor anchor off by a few bars. */
+const PAD = {l:46,r:12,t:12,b:34};
+
 function drawChart(chart){
   const {ctx,w,h} = chartCtx('chart');
   ctx.clearRect(0,0,w,h);
   const bars = chart.bars; if(!bars.length) return;
-  const pad = {l:46,r:12,t:12,b:34};
+  const pad = PAD;
   const highs = bars.map(b=>b.h), lows = bars.map(b=>b.l);
   const mas = chart.ma20.filter(v=>v!=null).concat(chart.ma50.filter(v=>v!=null));
   let hi = Math.max(...highs, ...mas), lo = Math.min(...lows, ...mas);
@@ -1168,7 +1272,7 @@ function drawMatrix(st){
     for(let j=0;j<3;j++){
       const v=(P[i][j]*100).toFixed(1)+'%';
       const diag=i===j;
-      const style = diag?`color:${rc};background:rgba(56,240,224,.06)`:'color:#9ba1a9';
+      const style = diag?`color:${rc};background:rgba(77,163,255,.06)`:'color:#9ba1a9';
       // The interval is the honest part: a rate from 18 samples is not the
       // same claim as the same rate from 200.
       let tip=v, band='';
@@ -1712,7 +1816,7 @@ function renderCorrMap(d){
     h+='<tr><th class="sym">'+esc(d.symbols[i])+'</th>';
     row.forEach((v,j)=>{
       const a=Math.min(Math.abs(v),1).toFixed(2);
-      const col = i===j ? 'rgba(56,240,224,.35)'
+      const col = i===j ? 'rgba(77,163,255,.35)'
                 : (v>=0 ? 'rgba(255,82,82,'+a+')' : 'rgba(0,230,118,'+a+')');
       h+='<td class="c" style="background:'+col+'">'+(i===j?'':v.toFixed(2).replace('0.','.'))+'</td>';
     });
@@ -2038,6 +2142,7 @@ function wireControls(){
   document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeScanner(); closeBlotter(); closeJournal(); closeAlerts(); closeHeat(); closeHealth(); } });
   $('heat-modal').addEventListener('click', e=>{ if(e.target.id==='heat-modal') closeHeat(); });
   $('o-symbol').addEventListener('change', ()=>{ META_OVERRIDE=false; refreshMetaSizing(); });
+  initChartZoom();
   refreshMetaSizing();
   $('hlth-modal').addEventListener('click', e=>{ if(e.target.id==='hlth-modal') closeHealth(); });
   pollHealth();                       // colour the chip on load
