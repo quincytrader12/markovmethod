@@ -969,6 +969,16 @@ def create_app(state: AppState):
         state.sweep.stop()
         return {"ok": True, **state.sweep.status()}
 
+    @app.post("/api/sweep/benchmark")
+    def sweep_benchmark(sample: int = 60):
+        """Measure a real fetch-and-score cycle against the connected account.
+
+        The network half of a sweep depends on the plan's rate limit and the
+        link, neither of which can be known in advance — so the terminal
+        measures them here rather than reporting an estimate as a fact.
+        """
+        return state.sweep.benchmark(sample=max(5, min(int(sample), 240)))
+
     @app.get("/api/regime-performance")
     def regime_perf(symbol: str = "SPY"):
         symbol = symbol.strip().upper() or "SPY"

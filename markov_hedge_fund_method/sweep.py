@@ -8,9 +8,15 @@ universe has to be everything the broker will actually let you trade.
 Three problems stand between that idea and a working sweep, and this module
 exists to solve them:
 
-  * **Requests.** Eleven thousand symbols fetched one at a time is eleven
-    thousand round-trips. Alpaca's bars endpoint takes a list, so the sweep
-    works in chunks and the same universe costs a few dozen requests.
+  * **Requests.** Alpaca's bars endpoint takes a list of symbols, so the sweep
+    fetches in chunks rather than one name at a time. Be careful about how big
+    a win that is: the endpoint pages at 10,000 bars, so a ten-year request for
+    240 symbols is around 61 sequential pages inside a single SDK call, not one
+    round-trip. Across the whole market it is 2,772 pages batched against
+    11,000 individual requests — a 4x saving, which is worth having and is not
+    the two-orders-of-magnitude that "one request instead of hundreds" implies.
+    The history window is the bigger lever: at three years the same sweep is
+    832 pages instead of 2,772.
 
   * **Memory.** Ten years of daily bars for eleven thousand symbols is most of a
     gigabyte, so the sweep cannot simply warm the shared cache and walk away. It
@@ -78,6 +84,7 @@ class MarketSweep:
         self.last_chunk: float | None = None
         self.started: float | None = None
         self.last_error: str | None = None
+        self.last_benchmark: dict | None = None
 
     # ── universe ────────────────────────────────────────────────────────────
     def build_universe(self) -> list[str]:
@@ -186,6 +193,106 @@ class MarketSweep:
             self.state._state_cache.pop(sym, None)
             self.state._state_vol_cache.pop(sym, None)
 
+    # ── measurement ─────────────────────────────────────────────────────────
+    #
+    # The network half of a sweep cannot be predicted from first principles: it
+    # depends on the plan's rate limit, the link, and how Alpaca is feeling. So
+    # rather than ship an estimate dressed up as a fact, the sweep can time
+    # itself against the real account and report what it actually saw.
+    #
+    # The arithmetic that *is* knowable is worth stating, because it sets the
+    # floor. Alpaca pages at 10,000 bars, so a ten-year request for 240 symbols
+    # is roughly 61 sequential pages inside one SDK call, not one round-trip.
+    # Batching still wins — 2,772 pages for the whole market against 11,000
+    # individual requests — but it is a 4x saving, not the 240x that "one
+    # request instead of two hundred and forty" would suggest.
+    PAGE_BARS = 10_000
+    BARS_PER_YEAR = 252
+
+    def page_projection(self, n_symbols: int, years: int) -> dict:
+        """Requests a full pass will cost, and what a shorter window would save.
+
+        Knowable without a connection: it follows from the universe size, the
+        history window and Alpaca's page limit. The history window is the only
+        lever that moves network cost rather than CPU cost, so it is priced here
+        rather than left to be guessed at.
+        """
+        n = max(int(n_symbols), 1)
+        pages = lambda y: max(1, -(-(y * self.BARS_PER_YEAR * n) // self.PAGE_BARS))
+        out = {"projectedPagesFullPass": pages(years)}
+        for alt in (3, 5):
+            out[f"projectedPagesAt{alt}y"] = pages(alt)
+        return out
+
+    def benchmark(self, sample: int = 60) -> dict:
+        """Time a real fetch-and-score cycle and project a full pass from it.
+
+        Downloads live data on purpose — that is the point. Uses symbols the
+        cache does not already hold, so it measures a cold fetch rather than
+        the speed of a dictionary lookup.
+        """
+        from .scanner import score_symbols
+
+        universe = self.universe or self.build_universe()
+        years = int(getattr(self.state.settings, "years", 10) or 10)
+        bars_each = years * self.BARS_PER_YEAR
+
+        picked, seen = [], set()
+        for sym in universe:
+            if sym in seen or sym in self.state._ohlc_cache:
+                continue
+            seen.add(sym)
+            picked.append(sym)
+            if len(picked) >= sample:
+                break
+        if not picked:
+            return {"ok": False, "reason": "nothing uncached left to measure"}
+        pages = self.page_projection(len(universe), years)
+        if self.state.demo or not getattr(self.state.settings, "has_credentials", False):
+            # Reporting zeros here would look like an immeasurably fast network
+            # rather than the absence of one. Say which it is — and still give
+            # the half of the answer that does not need a connection at all.
+            return {"ok": False, "sampled": 0,
+                    "reason": "no live connection — connect an Alpaca account to "
+                              "measure fetch speed on your own link",
+                    "universeSize": len(universe), "years": years, **pages}
+
+        t0 = time.perf_counter()
+        stats = self.state.prefetch_ohlc(picked)
+        fetch_s = time.perf_counter() - t0
+
+        got = [s for s in picked if s in self.state._ohlc_cache]
+        t1 = time.perf_counter()
+        rows = score_symbols(self.state, got, workers=WORKERS) or []
+        score_s = time.perf_counter() - t1
+
+        bars = sum(len(self.state._ohlc_cache[s][1]) for s in got) or 1
+        self._evict(picked)
+
+        n_uni = len(universe) or 1
+        per_symbol = (fetch_s + score_s) / max(len(got), 1)
+        pages_sample = max(1, -(-bars // self.PAGE_BARS))
+
+        out = {
+            **pages,
+            "ok": True,
+            "sampled": len(picked),
+            "fetched": stats.get("fetched", 0),
+            "scored": len(rows),
+            "barsDownloaded": bars,
+            "fetchSeconds": round(fetch_s, 2),
+            "scoreSeconds": round(score_s, 2),
+            "secondsPerSymbol": round(per_symbol, 3),
+            "symbolsPerSecond": round(len(got) / max(fetch_s + score_s, 1e-6), 1),
+            "pagesThisSample": pages_sample,
+            "universeSize": n_uni,
+            "projectedFullPassMin": round(per_symbol * n_uni / 60.0, 1),
+            "years": years,
+            "at": time.time(),
+        }
+        self.last_benchmark = out
+        return out
+
     # ── results ─────────────────────────────────────────────────────────────
     def results(self, top: int = 50) -> list[dict]:
         with self._lock:
@@ -206,6 +313,7 @@ class MarketSweep:
             "started": self.started,
             "lastError": self.last_error,
             "chunk": CHUNK,
+            "benchmark": self.last_benchmark,
         }
 
     # ── lifecycle ───────────────────────────────────────────────────────────

@@ -285,3 +285,88 @@ def test_a_batch_failure_leaves_the_per_symbol_path_working():
     finally:
         md.batch_alpaca_ohlc = orig
     assert stats["fetched"] == 0, "a failed prefetch must be slow, never wrong"
+
+
+# ── measuring the network half ──────────────────────────────────────────────
+def test_benchmark_says_it_cannot_measure_without_a_connection():
+    """Zeros would read as an infinitely fast network rather than no network."""
+    state = _state()
+    b = state.sweep.benchmark(sample=10)
+    assert b["ok"] is False
+    assert "connect" in b["reason"].lower()
+    assert b.get("secondsPerSymbol") is None
+
+
+def test_benchmark_still_reports_the_knowable_arithmetic_offline():
+    """Page counts follow from the universe size and history window alone."""
+    state = _state()
+    b = state.sweep.benchmark(sample=10)
+    assert b["universeSize"] > 300
+    assert b["projectedPagesFullPass"] >= 1
+
+
+def test_benchmark_measures_a_real_cycle_when_connected():
+    state = _state()
+    state.demo = False
+    state.settings = Settings(ticker="SPY", mode=Mode.PAPER, api_key="k", api_secret="s")
+    from markov_hedge_fund_method.market_data import synthetic_ohlc
+
+    import markov_hedge_fund_method.market_data as md
+    orig = md.batch_alpaca_ohlc
+    md.batch_alpaca_ohlc = lambda syms, *a, **k: {s: synthetic_ohlc(700, seed=1) for s in syms}
+    try:
+        b = state.sweep.benchmark(sample=6)
+    finally:
+        md.batch_alpaca_ohlc = orig
+    assert b["ok"] is True
+    assert b["fetched"] == 6 and b["scored"] >= 1
+    assert b["secondsPerSymbol"] > 0 and b["symbolsPerSecond"] > 0
+    assert b["barsDownloaded"] >= 700
+    assert b["projectedFullPassMin"] > 0
+
+
+def test_benchmark_does_not_leave_its_sample_in_the_cache():
+    """A measurement must not quietly become a memory leak."""
+    state = _state()
+    state.demo = False
+    state.settings = Settings(ticker="SPY", mode=Mode.PAPER, api_key="k", api_secret="s")
+    from markov_hedge_fund_method.market_data import synthetic_ohlc
+    import markov_hedge_fund_method.market_data as md
+    orig = md.batch_alpaca_ohlc
+    md.batch_alpaca_ohlc = lambda syms, *a, **k: {s: synthetic_ohlc(700, seed=1) for s in syms}
+    try:
+        state.sweep.benchmark(sample=8)
+    finally:
+        md.batch_alpaca_ohlc = orig
+    assert len(state._ohlc_cache) <= 4
+
+
+def test_a_shorter_history_window_is_costed_out():
+    """The history window is the one lever that moves network cost, so the
+    benchmark has to price it rather than leave it to be guessed at."""
+    state = _state()
+    b = state.sweep.benchmark(sample=10)
+    assert b["projectedPagesAt3y"] < b["projectedPagesFullPass"]
+    assert b["projectedPagesAt5y"] < b["projectedPagesFullPass"]
+    assert b["projectedPagesAt3y"] < b["projectedPagesAt5y"]
+
+
+def test_the_page_size_matches_alpacas_real_limit():
+    """The whole request estimate rests on this number being right."""
+    from markov_hedge_fund_method.sweep import MarketSweep as MS
+    assert MS.PAGE_BARS == 10_000
+
+
+def test_the_module_does_not_overstate_the_batching_win():
+    """An earlier version of this claimed the full market cost 'a few dozen
+    requests'. It costs thousands; batching is a 4x saving, not 240x."""
+    import markov_hedge_fund_method.sweep as sw
+    doc = sw.__doc__ or ""
+    assert "few dozen requests" not in doc
+    assert "4x" in doc or "2,772" in doc
+
+
+def test_the_benchmark_endpoint_bounds_its_sample():
+    client = TestClient(create_app(_state()))
+    assert client.post("/api/sweep/benchmark", params={"sample": 100000}).status_code == 200
+    assert client.post("/api/sweep/benchmark", params={"sample": 0}).status_code == 200
