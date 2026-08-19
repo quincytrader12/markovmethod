@@ -370,3 +370,71 @@ def test_the_benchmark_endpoint_bounds_its_sample():
     client = TestClient(create_app(_state()))
     assert client.post("/api/sweep/benchmark", params={"sample": 100000}).status_code == 200
     assert client.post("/api/sweep/benchmark", params={"sample": 0}).status_code == 200
+
+
+# ── everything downstream of the scanner picked the upgrade up ──────────────
+def test_the_heatmap_offers_every_scan_group():
+    """The heatmap had its own stale scope list and would have kept showing the
+    old five groups after the universe tripled."""
+    client = TestClient(create_app(_state()))
+    html = client.get("/").text
+    for group in ("consumer", "health", "financial", "energy", "industrial",
+                  "semis", "software", "telecom", "megacap_intl"):
+        assert f'<option value="{group}"' in html, f"heatmap cannot select {group}"
+    assert '<option value="full"' in html, "heatmap cannot show the sweep board"
+
+
+def test_the_heatmap_resolves_the_new_groups():
+    client = TestClient(create_app(_state()))
+    for scope in ("consumer", "energy", "semis"):
+        d = client.get("/api/heatmap", params={"view": "regime", "scope": scope}).json()
+        assert d["shown"] > 10, f"{scope} resolved to nothing"
+
+
+def test_the_heatmap_admits_when_it_is_showing_a_subset():
+    """Silently showing 80 of 354 looks like the whole set."""
+    client = TestClient(create_app(_state()))
+    d = client.get("/api/heatmap", params={"view": "regime", "scope": "market"}).json()
+    assert d["requested"] > d["shown"]
+    assert d["truncated"] is True and d["cap"] == d["shown"]
+
+
+def test_a_small_scope_is_not_reported_as_truncated():
+    client = TestClient(create_app(_state()))
+    d = client.get("/api/heatmap", params={"view": "regime", "scope": "energy"}).json()
+    assert d["truncated"] is False
+
+
+def test_the_ui_surfaces_the_truncation():
+    client = TestClient(create_app(_state()))
+    html = client.get("/").text
+    assert "heatCoverage" in html
+    assert html.count("heatCoverage(LAST_HEAT)") == 3, "not every view reports coverage"
+
+
+def test_the_full_scope_heatmap_uses_the_ranked_board():
+    """Truncating a ranked board keeps the interesting names; truncating an
+    alphabetical list keeps whatever starts with A."""
+    state = _state()
+    state.sweep.board = {f"S{i}": {"symbol": f"S{i}", "score": i} for i in range(200)}
+    client = TestClient(create_app(state))
+    d = client.get("/api/heatmap", params={"view": "regime", "scope": "full"}).json()
+    assert d["requested"] <= 80
+
+
+def test_telegram_can_push_the_full_market_board():
+    """The manual Telegram push was capped at the curated list."""
+    import inspect
+    import markov_hedge_fund_method.web as web
+    src = inspect.getsource(web.create_app)
+    assert 'if universe == "full":' in src and "state.sweep.results(200)" in src
+
+
+def test_startup_no_longer_prewarms_the_curated_universe():
+    """It cost 17s of background CPU and took page loads from 4.8ms to 76ms,
+    and the sweep already covers the same ground while yielding to the user."""
+    import inspect
+    import markov_hedge_fund_method.web as web
+    src = inspect.getsource(web.main)
+    assert 'state.prewarm("market"' not in src
+    assert "state.sweep.start()" in src, "nothing replaced it"

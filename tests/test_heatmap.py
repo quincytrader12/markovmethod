@@ -198,9 +198,12 @@ def test_heatmap_accepts_explicit_symbols():
 
 
 def test_heatmap_caps_the_board_size():
+    from markov_hedge_fund_method.web import HEAT_MAX
+
     many = ",".join(f"S{i}" for i in range(200))
     d = _client().get("/api/heatmap", params={"symbols": many}).json()
-    assert len(d["symbols"]) <= 60, "an unbounded board would be an unbounded request"
+    assert len(d["symbols"]) <= HEAT_MAX, "an unbounded board is an unbounded request"
+    assert d["truncated"] is True, "a capped board must say it was capped"
 
 
 def test_heatmap_is_cached():

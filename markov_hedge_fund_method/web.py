@@ -148,6 +148,11 @@ SCAN_UNIVERSE = list(dict.fromkeys(
 # Alpaca connection to enumerate.
 SCAN_ALL = list(dict.fromkeys(SCAN_UNIVERSE + SCAN_GROUPS["crypto"]))
 
+# Rows a heatmap can show before it stops being readable. The scanner ranks and
+# filters; the heatmap is for seeing a board at a glance, and a glance does not
+# extend to three hundred rows.
+HEAT_MAX = 80
+
 
 # Full names for the bundled universe (tooltips). When connected to Alpaca the
 # real asset names are used for every symbol; this covers the offline case.
@@ -779,14 +784,24 @@ def create_app(state: AppState):
 
         picked = [s.strip().upper() for s in symbols.split(",") if s.strip()]
         if not picked:
-            if scope in SCAN_GROUPS:
+            if scope == "full":
+                # The sweep's leaderboard: already ranked, so truncating it keeps
+                # the most interesting names rather than the alphabetically first.
+                picked = [r.get("symbol") or r.get("ticker")
+                          for r in state.sweep.results(HEAT_MAX)]
+                picked = [p for p in picked if p] or list(SCAN_GROUPS["megacap"])
+            elif scope in SCAN_GROUPS:
                 picked = list(SCAN_GROUPS[scope])
             elif scope == "market":
                 picked = list(SCAN_UNIVERSE)
             else:
                 picked = ([s.strip().upper() for s in watchlist.split(",") if s.strip()]
                           or list(DEFAULT_SYMBOLS))
-        picked = picked[:60]
+        # A grid of hundreds of rows is unreadable, so the board is capped — but
+        # silently showing the first sixty of three hundred and fifty-four would
+        # look like the whole set. The cap is reported and the UI says so.
+        requested = len(picked)
+        picked = picked[:HEAT_MAX]
 
         view = (view or "regime").lower()
         key = f"{view}|{scope}|{','.join(picked)}"
@@ -824,7 +839,9 @@ def create_app(state: AppState):
                 if lab is not None:
                     labels[sym] = lab
 
-        out = {"view": view, "scope": scope, "symbols": list(closes)}
+        out = {"view": view, "scope": scope, "symbols": list(closes),
+               "requested": requested, "shown": len(closes),
+               "truncated": requested > len(picked), "cap": HEAT_MAX}
         if view == "signal":
             out["signal"] = signal_map(states)
         elif view in ("correlation", "corr"):
@@ -1115,10 +1132,13 @@ def create_app(state: AppState):
     def telegram_send_scan(universe: str = "market", top: int = 5):
         """Push the current scanner picks to Telegram, on demand."""
         from .scanner import rank
-        syms = SCAN_GROUPS.get(universe, SCAN_UNIVERSE)
-        key = universe if universe in SCAN_GROUPS else "market"
         cfg = state.telegram.status()
-        result = rank(state.scored_universe(key, syms), top=max(1, top))
+        if universe == "full":
+            result = rank(state.sweep.results(200), top=max(1, top))
+        else:
+            syms = SCAN_GROUPS.get(universe, SCAN_UNIVERSE)
+            key = universe if universe in SCAN_GROUPS else "market"
+            result = rank(state.scored_universe(key, syms), top=max(1, top))
         text = format_scan(result["results"], min_score=cfg["minScore"], limit=top)
         if not text:
             return {"ok": False, "reason": f"nothing scored at or above {cfg['minScore']}"}
@@ -1644,9 +1664,12 @@ def main() -> int:
         print("mamba-web selftest OK — FastAPI app built, HUD asset present.")
         return 0
 
-    # Score the scan universe in the background while the user is reading the
-    # dashboard, so their first ⚡ SCAN comes back instantly.
-    state.prewarm("market", SCAN_UNIVERSE)
+    # No standalone scan prewarm any more. It scored the curated universe on two
+    # threads with no regard for what the user was doing, and once that universe
+    # grew from 100 names to 354 it cost 17 seconds of background CPU right after
+    # boot -- page loads went from 4.8ms to 76ms for the duration. The sweep does
+    # the same job better: it covers everything rather than one list, and it
+    # stands aside whenever the terminal is being used.
     state.prewarm_universe()   # Alpaca asset list, so search is instant from the first keystroke
     if state.watcher.config()["autoScan"]:
         state.watcher.start()  # keep hunting even with the page closed

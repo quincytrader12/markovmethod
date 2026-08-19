@@ -1733,7 +1733,7 @@ async function delJournal(id){
    Three views over the same set of symbols. Everything is served from the
    per-symbol cache the dashboard already fills, so switching views is a
    re-render, not a re-download. */
-let HEAT_VIEW='regime';
+let HEAT_VIEW='regime', LAST_HEAT=null;
 function openHeat(){ $('heat-modal').classList.add('open'); loadHeat(); }
 function closeHeat(){ $('heat-modal').classList.remove('open'); }
 function heatView(v){
@@ -1741,6 +1741,12 @@ function heatView(v){
   document.querySelectorAll('#heat-seg button').forEach(b=>
     b.classList.toggle('on', b.dataset.view===v));
   loadHeat();
+}
+function heatCoverage(d){
+  if(!d || !d.truncated) return '';
+  return `<p class="heat-note" style="color:var(--amber)">Showing ${d.shown} of `+
+         `${d.requested} names — a grid this size stops being readable beyond `+
+         `${d.cap} rows. Use the scanner for the full ranked list.</p>`;
 }
 async function loadHeat(){
   const body=$('heat-body'); if(!body) return;
@@ -1750,6 +1756,7 @@ async function loadHeat(){
   if(scope==='watchlist') p.set('watchlist', currentWatch().join(','));
   try{
     const d=await api('/api/heatmap?'+p.toString());
+    LAST_HEAT=d;
     if(HEAT_VIEW==='regime') renderRegimeMap(d.regime);
     else if(HEAT_VIEW==='signal') renderSignalMap(d.signal);
     else renderCorrMap(d.correlation);
@@ -1758,7 +1765,7 @@ async function loadHeat(){
 function renderRegimeMap(d){
   const body=$('heat-body');
   if(!d || !d.rows.length){ body.innerHTML='<div class="scan-loading">nothing to map</div>'; return; }
-  let h='<div class="heat-wrap"><p class="heat-note">Each row is a symbol, each column one week. '+
+  let h='<div class="heat-wrap">'+heatCoverage(LAST_HEAT)+'<p class="heat-note">Each row is a symbol, each column one week. '+
         'Green is <b>Bull</b>, amber <b>Sideways</b>, red <b>Bear</b> — faded means the week was '+
         'split rather than decisive. Read it left to right for one name, top to bottom for the board: '+
         'a rotation shows up as a colour front sweeping across the grid.</p>';
@@ -1784,7 +1791,7 @@ function renderRegimeMap(d){
 function renderSignalMap(d){
   const body=$('heat-body');
   if(!d || !d.cells.length){ body.innerHTML='<div class="scan-loading">nothing to map</div>'; return; }
-  let h='<div class="heat-wrap"><p class="heat-note">Today\'s signal for every name, strongest first. '+
+  let h='<div class="heat-wrap">'+heatCoverage(LAST_HEAT)+'<p class="heat-note">Today\'s signal for every name, strongest first. '+
         'The number is P(Bull next) − P(Bear next); the percentile is what actually matters — '+
         'a +0.30 is only strong <b>relative to the rest of the board today</b>. '+
         'Dashed tiles have no live market data.</p>';
@@ -1819,7 +1826,7 @@ function renderCorrMap(d){
              : avg>0.4 ? 'Meaningfully concentrated — these names move together more than they move apart.'
              : avg>0.15 ? 'Moderately related, with real diversification left.'
              : 'Genuinely spread out — these are close to independent bets.';
-  let h='<div class="heat-wrap"><p class="heat-note">Correlation of daily returns over the last '+
+  let h='<div class="heat-wrap">'+heatCoverage(LAST_HEAT)+'<p class="heat-note">Correlation of daily returns over the last '+
         d.window+' sessions. The single number that matters is the average: '+read+'</p>';
   h+='<div class="heat-stats"><div class="heat-stat"><b>'+fmt(avg,3)+
      '</b><span>AVERAGE CORRELATION</span></div>'+
@@ -2308,11 +2315,21 @@ boot();
       <select id="heat-scope" class="heat-scope" onchange="loadHeat()"
               title="Which set of symbols to map">
         <option value="watchlist">Watchlist</option>
+        <option value="full">Top from full-market sweep</option>
+        <option value="market">Curated universe (354)</option>
         <option value="megacap">Mega caps</option>
-        <option value="midcap">Mid caps</option>
-        <option value="sector">Sectors</option>
+        <option value="midcap">Growth &amp; momentum</option>
+        <option value="consumer">Consumer &amp; retail</option>
+        <option value="health">Healthcare</option>
+        <option value="financial">Financials</option>
+        <option value="energy">Energy &amp; utilities</option>
+        <option value="industrial">Industrials</option>
+        <option value="semis">Semiconductors</option>
+        <option value="software">Software</option>
+        <option value="telecom">Telecom &amp; media</option>
+        <option value="megacap_intl">International</option>
+        <option value="sector">Sector ETFs</option>
         <option value="crypto">Crypto</option>
-        <option value="market">Whole market scan list</option>
       </select>
       <div class="spacer"></div>
       <button class="btn-x" onclick="loadHeat()">⟳ Refresh</button>
