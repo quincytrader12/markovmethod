@@ -255,3 +255,30 @@ def test_demo_mode_never_touches_the_store(tmp_path, monkeypatch):
     state.demo = True
     state.prefetch_ohlc(["AAA"])
     assert calls["full"] == 0 and state.prices.get("AAA") is None
+
+
+def test_mixed_staleness_does_not_drag_everyone_back(tmp_path, monkeypatch):
+    """One symbol a year behind must not make the whole batch re-download a year."""
+    hist = {s: synthetic_ohlc(2520, seed=i) for i, s in enumerate(("AAA", "BBB"))}
+    state, calls = _wired(tmp_path, monkeypatch, list(hist), hist)
+    state.prices.put("AAA", hist["AAA"].iloc[:-3])      # three days behind
+    state.prices.put("BBB", hist["BBB"].iloc[:-400])    # far behind
+    state.prices.flush()
+
+    state.prefetch_ohlc(["AAA", "BBB"])
+    # Batching everything from the oldest date would fetch ~400 bars for BOTH.
+    assert calls["bars"] < 500, f"over-fetched: {calls['bars']} bars"
+    assert len(state._ohlc_cache["AAA"][1]) == 2520
+    assert len(state._ohlc_cache["BBB"][1]) == 2520
+
+
+def test_scattered_staleness_does_not_fan_out_into_many_requests(tmp_path, monkeypatch):
+    """Dozens of tiny requests is its own kind of slow on a rate-limited plan."""
+    syms = [f"S{i}" for i in range(12)]
+    hist = {s: synthetic_ohlc(2520, seed=i) for i, s in enumerate(syms)}
+    state, calls = _wired(tmp_path, monkeypatch, syms, hist)
+    for i, s in enumerate(syms):
+        state.prices.put(s, hist[s].iloc[: 2520 - (i + 1) * 3])   # every one different
+    state.prices.flush()
+    state.prefetch_ohlc(syms)
+    assert calls["incr"] <= len(syms), "it issued more requests than symbols"

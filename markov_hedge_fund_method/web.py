@@ -619,16 +619,27 @@ class AppState:
                 frames[sym] = df
         stats["restored"] = len(frames)
 
-        # Top up the stale ones from their own last date. Grouping by date keeps
-        # each request asking for the narrowest window that covers its batch.
+        # Top up the stale ones, grouped by how stale they actually are. Asking
+        # for every symbol from the *oldest* one's date means a single symbol a
+        # year behind drags the whole batch into re-downloading a year. Grouping
+        # keeps each request to the narrowest window covering its members; if
+        # staleness is unusually scattered the groups are abandoned for one
+        # request, because dozens of tiny requests is its own kind of slow on a
+        # rate-limited plan.
+        updates: dict = {}
         if stale:
-            oldest = min(known[s] for s in stale)
-            try:
-                updates = batch_alpaca_ohlc(
-                    stale, self.settings.years, self.settings.api_key,
-                    self.settings.api_secret, since=oldest)
-            except Exception:  # noqa: BLE001
-                updates = {}
+            groups: dict = {}
+            for sym in stale:
+                groups.setdefault(known[sym].normalize(), []).append(sym)
+            if len(groups) > 8:
+                groups = {min(known[s] for s in stale): stale}
+            for since, syms in groups.items():
+                try:
+                    updates.update(batch_alpaca_ohlc(
+                        syms, self.settings.years, self.settings.api_key,
+                        self.settings.api_secret, since=since))
+                except Exception:  # noqa: BLE001
+                    continue
             for sym in stale:
                 base = self.prices.get(sym)
                 add = updates.get(sym)
