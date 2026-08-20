@@ -153,6 +153,7 @@
   .metasize .ovr{margin-left:6px; color:var(--dim); text-decoration:underline; cursor:pointer}
   .metasize .ovr:hover{color:var(--cyan)}
   #health-dot.warn{color:var(--amber)}
+  /* sector on a search result, so you know what you are adding */
   /* scanner navigation — sectors, grouped and labelled */
   .scan-nav{display:flex; flex-direction:column; gap:5px; flex:1 1 auto; min-width:0}
   .nav-label{color:var(--dim2); font-size:8.5px; letter-spacing:1.5px; text-transform:uppercase;
@@ -316,6 +317,10 @@
   .sugg-list .s .t{font-weight:700; color:var(--ink)}
   .sugg-list .s .nm{margin-left:auto; color:var(--dim); font-size:10px; max-width:62%;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  /* sector on a search result, so you know what you are adding before you add it */
+  .sugg-list .s .sg{color:var(--dim2); font-size:9px; letter-spacing:.5px; text-transform:uppercase;
+    white-space:nowrap; flex:0 0 auto}
+  .sugg-list .s .nm{max-width:44%}
   .sugg-list .empty{padding:8px 9px; color:var(--dim); font-size:11px}
   /* watchlist */
   .wl{display:flex; flex-direction:column; gap:3px; max-height:12vh; overflow-y:auto}
@@ -534,6 +539,7 @@
     <span class="chip halted-chip" id="halt-ind" style="display:none">⛔ HALTED</span>
     <span class="chip" id="chip-acct">ACCT <b id="v-acct">none</b></span>
     <span class="chip"><span class="led off" id="led-conn"></span><b id="v-conn">offline</b></span>
+    <span class="chip" id="chip-build" title="build running — page hash should match the server">BUILD <b id="v-build">…</b></span>
     <span class="chip clock" id="clock">--:--:--</span>
   </div>
 
@@ -889,7 +895,8 @@ function renderSuggest(){
   if(!SUGG.length){ el.innerHTML='<div class="empty">no matches</div>'; el.classList.add('open'); return; }
   el.innerHTML = SUGG.map((o,i)=>
     `<div class="s ${i===SUGGI?'hl':''}" onmousedown="event.preventDefault()" onclick="pickSymbol('${o.symbol}')">
-       <span class="t">${o.symbol}</span><span class="nm">${esc(o.name||'')}</span></div>`).join('');
+       <span class="t">${o.symbol}</span><span class="nm">${esc(o.name||'')}</span>` +
+       (o.sector ? `<span class="sg">${esc(o.sector)}</span>` : '') + `</div>`).join('');
   el.classList.add('open');
 }
 function hideSuggest(){ $('sugg-list').classList.remove('open'); SUGGI=-1; }
@@ -1473,7 +1480,10 @@ const SCAN_LABEL = {full:'every tradable symbol', watchlist:'your watchlist',
 async function loadScanGroups(){
   if(SCAN_GROUPS_META) return SCAN_GROUPS_META;
   try{ SCAN_GROUPS_META = await api('/api/groups'); }
-  catch(e){ SCAN_GROUPS_META = {sectors:[], other:[], styles:[]}; }
+  catch(e){
+    // An empty menu with no explanation reads as "this build has no sectors".
+    SCAN_GROUPS_META = {sectors:[], other:[], styles:[], error:e.message};
+  }
   (['sectors','other','styles']).forEach(b=>
     (SCAN_GROUPS_META[b]||[]).forEach(g=>{ SCAN_LABEL[g.key]=g.name.toLowerCase(); }));
   return SCAN_GROUPS_META;
@@ -1492,6 +1502,11 @@ async function renderScanNav(){
     btn('full', 'Everything', 'Every tradable symbol, swept continuously in the background') +
     btn('watchlist', 'Watchlist', 'Just the names on your watchlist') +
     '</div>';
+  if(g.error || !(g.sectors||[]).length){
+    nav.innerHTML = h + '<div class="nav-label" style="color:var(--amber)">Sectors unavailable' +
+      (g.error ? ' — '+esc(g.error) : '') + '</div>';
+    return;
+  }
   h += '<div class="nav-label">Sectors</div><div class="nav-row">';
   (g.sectors||[]).forEach(x=>{ h += btn(x.key, x.name, x.blurb, x.count); });
   h += '</div><div class="nav-label">Other</div><div class="nav-row">';
@@ -2266,8 +2281,24 @@ function wireControls(){
 }
 
 /* ---------- boot ---------- */
+/* Compare the page the browser is running against the page the server holds.
+   They can differ when a cached copy survives an upgrade, which is exactly the
+   failure that made a whole release look like nothing had changed. */
+async function checkBuild(){
+  let d; try{ d = await api('/api/version'); }catch(e){ return; }
+  const el = $('v-build'); if(!el) return;
+  el.textContent = d.page;
+  const chip = $('chip-build');
+  if(chip) chip.title = `v${d.version} · ${d.groups} scan groups · `+
+    `${d.universe} names · page ${d.page}`;
+  if(window.__PAGE_BUILD && window.__PAGE_BUILD !== d.page){
+    chip.classList.add('src-warn');
+    log('this page is stale — press Ctrl+Shift+R to load the current build','err');
+  }
+}
 async function boot(){
   await loadConfig();
+  checkBuild();
   syncOrderFields();
   wireControls();
   await loadState(false);

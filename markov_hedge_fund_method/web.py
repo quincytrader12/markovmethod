@@ -22,7 +22,9 @@ FastAPI resolves endpoint parameter types from real annotation objects; stringiz
 annotations (from that future import) break body/Request detection here.
 """
 
+import hashlib
 import os
+import sys
 import time
 
 import pandas as pd
@@ -683,6 +685,7 @@ _ORDER_FIELDS = {
 
 def create_app(state: AppState):
     from fastapi import FastAPI, HTTPException, Request
+    from fastapi.responses import HTMLResponse
     from fastapi.responses import FileResponse, JSONResponse
 
     app = FastAPI(title="Mamba Terminal", docs_url=None, redoc_url=None)
@@ -704,7 +707,52 @@ def create_app(state: AppState):
     # ── page ─────────────────────────────────────────────────────────────────
     @app.get("/")
     def index():
-        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+        """The HUD page, explicitly never cached.
+
+        FileResponse sends an ETag and Last-Modified but no Cache-Control, and a
+        browser treats that as free rein to reuse its copy without asking. The
+        page is always served from the same localhost URL, so a new build would
+        start up with the *previous* version's HTML still on screen — new API,
+        old interface, and no sign anything had changed. Every UI change shipped
+        this way was invisible until a hard refresh.
+
+        The page is 130KB off local disk. Never caching it costs nothing.
+        """
+        path = os.path.join(STATIC_DIR, "index.html")
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+        except OSError:
+            return FileResponse(path)
+        # Stamp the page with its own hash. A copy cached before this fix
+        # carries the old build's stamp, so the page can notice it is stale by
+        # comparing itself against /api/version and say so — which is the only
+        # way an already-cached browser ever finds out.
+        stamp = hashlib.sha256(raw).hexdigest()[:8]
+        html = raw.decode("utf-8").replace(
+            "</head>", f'<script>window.__PAGE_BUILD="{stamp}";</script>\n</head>', 1)
+        return HTMLResponse(html, headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache", "Expires": "0"})
+
+    @app.get("/api/version")
+    def version():
+        """Which build is actually running, so a stale page is diagnosable.
+
+        The page hash is the useful half: it changes whenever the HUD markup
+        changes, so the interface on screen can be checked against the interface
+        the server holds instead of guessed at.
+        """
+        from . import __version__
+
+        try:
+            with open(os.path.join(STATIC_DIR, "index.html"), "rb") as f:
+                page_hash = hashlib.sha256(f.read()).hexdigest()[:8]
+        except OSError:
+            page_hash = "unknown"
+        return {"version": __version__, "page": page_hash,
+                "groups": len(SCAN_GROUPS), "universe": len(SCAN_UNIVERSE),
+                "frozen": bool(getattr(sys, "frozen", False))}
 
     @app.get("/api/config")
     def config():
@@ -739,7 +787,8 @@ def create_app(state: AppState):
         list is still loading it answers from the bundled universe."""
         q = (q or "").strip().upper()
         if not q:
-            return {"results": [{"symbol": s, "name": state.name_for(s)} for s in DEFAULT_SYMBOLS],
+            return {"results": [{"symbol": s, "name": state.name_for(s),
+                                 "sector": sector_name(s)} for s in DEFAULT_SYMBOLS],
                     "connected": state.universe_ready(), "loading": False}
         results, live = state.search_symbols(q)
         # Not verified against Alpaca (offline or still loading) — allow the
@@ -747,7 +796,8 @@ def create_app(state: AppState):
         if not live and q not in results:
             results = [q] + results
         results = results[:30]
-        return {"results": [{"symbol": s, "name": state.name_for(s)} for s in results],
+        return {"results": [{"symbol": s, "name": state.name_for(s),
+                             "sector": sector_name(s)} for s in results],
                 "connected": live,
                 "loading": state.broker is not None and not state.universe_ready()}
 

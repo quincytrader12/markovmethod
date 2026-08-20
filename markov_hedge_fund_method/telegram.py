@@ -219,20 +219,28 @@ def format_scan(results: list[dict], *, min_score: int = 70, limit: int = 5) -> 
     for r in picks:
         fresh = r.get("daysInRegime", 0)
         tag = f" · 🌱 {fresh}d new" if 0 < fresh <= 5 else ""
+        # The sector matters on a phone: three names from one sector is a
+        # concentrated bet, and that is invisible from tickers alone.
+        sec = r.get("sector") or ""
+        sec_line = f" · {_esc(sec)}" if sec else ""
         lines.append(
             f"\n<b>{_esc(r['symbol'])}</b> — {_esc(r.get('name', ''))}\n"
             f"{_esc(r.get('verdict', ''))} · score {r.get('score')} · "
-            f"${r.get('lastPrice')}{tag}\n"
+            f"${r.get('lastPrice')}{tag}{sec_line}\n"
             f"<i>{_esc(r.get('rationale', ''))}</i>")
     lines.append("\n<i>Research screen — not investment advice.</i>")
     return "\n".join(lines)
 
 
 def format_flip(event: dict) -> str:
+    from .sectors import sector_name
+
     arrow = "📈" if event.get("to") == "bull" else "📉" if event.get("to") == "bear" else "↔️"
+    sec = sector_name(event.get("symbol", ""))
+    tail = f"\n<i>{_esc(sec)}</i>" if sec else ""
     return (f"{arrow} <b>{_esc(event.get('symbol', ''))}</b> regime flip: "
             f"{_esc(str(event.get('from', '')).upper())} → "
-            f"<b>{_esc(str(event.get('to', '')).upper())}</b>")
+            f"<b>{_esc(str(event.get('to', '')).upper())}</b>{tail}")
 
 
 # ── buttons ─────────────────────────────────────────────────────────────────
