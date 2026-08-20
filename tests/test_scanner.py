@@ -69,14 +69,18 @@ def test_wide_universe_and_groups():
     from markov_hedge_fund_method.web import SCAN_GROUPS, SCAN_UNIVERSE
     assert len(SCAN_UNIVERSE) >= 50, "default sweep should be wide, not just mega caps"
     assert len(set(SCAN_UNIVERSE)) == len(SCAN_UNIVERSE), "no duplicate tickers"
-    assert set(SCAN_GROUPS) >= {"megacap", "midcap", "sector", "crypto"}
-    # the point of widening: mid caps must outnumber mega caps
-    assert len(SCAN_GROUPS["midcap"]) > len(SCAN_GROUPS["megacap"])
+    # The eleven standard sectors, plus the two things that are not sectors.
+    assert set(SCAN_GROUPS) >= {
+        "communication", "discretionary", "staples", "energy", "financials",
+        "health", "industrials", "technology", "materials", "realestate",
+        "utilities", "etf", "crypto"}
+    # Funds are not a sector and must not dilute the equity sweep.
+    assert "SPY" not in SCAN_UNIVERSE and "SPY" in SCAN_GROUPS["etf"]
 
 
 def test_scan_group_universes():
     client, _ = _demo_client()
-    for group in ("midcap", "sector", "megacap", "crypto"):
+    for group in ("communication", "realestate", "utilities", "etf", "crypto"):
         d = client.get("/api/scan", params={"universe": group, "top": 5}).json()
         assert d["universe"] == group and d["universeSize"] > 0
         assert d["results"]

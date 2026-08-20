@@ -153,6 +153,20 @@
   .metasize .ovr{margin-left:6px; color:var(--dim); text-decoration:underline; cursor:pointer}
   .metasize .ovr:hover{color:var(--cyan)}
   #health-dot.warn{color:var(--amber)}
+  /* scanner navigation — sectors, grouped and labelled */
+  .scan-nav{display:flex; flex-direction:column; gap:5px; flex:1 1 auto; min-width:0}
+  .nav-label{color:var(--dim2); font-size:8.5px; letter-spacing:1.5px; text-transform:uppercase;
+    margin-top:2px}
+  .nav-row{display:flex; flex-wrap:wrap; gap:4px}
+  .nav-row button{background:#1b1b1c; border:1px solid var(--edge); color:var(--dim);
+    font-family:inherit; font-size:10px; letter-spacing:.5px; padding:4px 9px; cursor:pointer;
+    border-radius:3px; white-space:nowrap; display:inline-flex; align-items:center; gap:5px}
+  .nav-row button:hover{border-color:var(--cyan); color:var(--ink)}
+  .nav-row button.on{background:var(--cyan); border-color:var(--cyan); color:#131314; font-weight:700}
+  .nav-row button i{font-style:normal; opacity:.6; font-size:9px; font-family:var(--mono)}
+  .nav-row button.on i{opacity:.8}
+  /* sector tag on a result row */
+  .scan-sector{color:var(--dim2); font-size:9px; letter-spacing:.5px; text-transform:uppercase}
   .scan-list{overflow-y:auto; padding:10px 14px; display:flex; flex-direction:column; gap:8px}
   .scan-card{border:1px solid var(--edge); border-left:3px solid var(--edge); border-radius:4px;
     padding:9px 12px; background:#1a1a1c}
@@ -1427,18 +1441,46 @@ async function removeAccount(name){
 /* ---------- wiring ---------- */
 /* ---------- opportunity scanner ---------- */
 let SCAN_U='full', LAST_SCAN={results:[]};
-function openScanner(){ $('scan-modal').classList.add('open'); runScan(); }
+function openScanner(){ renderScanNav(); $('scan-modal').classList.add('open'); runScan(); }
 function closeScanner(){ $('scan-modal').classList.remove('open'); }
 let SCAN_CUSTOM='';
-const SCAN_LABEL={full:'every tradable symbol', market:'the curated universe',
-                  midcap:'growth & momentum', sector:'sectors & themes',
-                  consumer:'consumer & retail', health:'healthcare', financial:'financials',
-                  energy:'energy & utilities', industrial:'industrials', semis:'semiconductors',
-                  software:'software', telecom:'telecom & media', megacap_intl:'international',
-                  megacap:'mega caps', crypto:'crypto', watchlist:'your watchlist', custom:'your tickers'};
+let SCAN_GROUPS_META = null;          // filled from /api/groups
+const SCAN_LABEL = {full:'every tradable symbol', watchlist:'your watchlist',
+                    custom:'your tickers'};
+
+async function loadScanGroups(){
+  if(SCAN_GROUPS_META) return SCAN_GROUPS_META;
+  try{ SCAN_GROUPS_META = await api('/api/groups'); }
+  catch(e){ SCAN_GROUPS_META = {sectors:[], other:[], styles:[]}; }
+  (['sectors','other','styles']).forEach(b=>
+    (SCAN_GROUPS_META[b]||[]).forEach(g=>{ SCAN_LABEL[g.key]=g.name.toLowerCase(); }));
+  return SCAN_GROUPS_META;
+}
+/* The scanner navigation: everything first, then the eleven sectors, then the
+   things that are not sectors, then the style cuts. Built from the server's
+   taxonomy so the menu can never list a group the scanner cannot scan. */
+async function renderScanNav(){
+  const nav = $('scan-seg'); if(!nav) return;
+  const g = await loadScanGroups();
+  const btn = (k, label, title, count) =>
+    `<button data-u="${k}" class="${SCAN_U===k?'on':''}" onclick="setScanUniverse('${k}')"` +
+    ` title="${esc(title||'')}">${esc(label)}` +
+    (count?`<i>${count}</i>`:'') + `</button>`;
+  let h = '<div class="nav-row">' +
+    btn('full', 'Everything', 'Every tradable symbol, swept continuously in the background') +
+    btn('watchlist', 'Watchlist', 'Just the names on your watchlist') +
+    '</div>';
+  h += '<div class="nav-label">Sectors</div><div class="nav-row">';
+  (g.sectors||[]).forEach(x=>{ h += btn(x.key, x.name, x.blurb, x.count); });
+  h += '</div><div class="nav-label">Other</div><div class="nav-row">';
+  (g.other||[]).forEach(x=>{ h += btn(x.key, x.name, x.blurb, x.count); });
+  (g.styles||[]).forEach(x=>{ h += btn(x.key, x.name, x.blurb, x.count); });
+  h += '</div>';
+  nav.innerHTML = h;
+}
 function setScanUniverse(u){
   SCAN_U=u; SCAN_CUSTOM='';
-  document.querySelectorAll('#scan-seg button').forEach(b=>b.classList.toggle('on', b.dataset.u===u));
+  renderScanNav();          // after SCAN_U, or it highlights the previous group
   runScan();
 }
 function vClass(v){ return v==='Strong Buy'?'strong': v==='Buy'?'buy': v==='Watch'?'watch':'avoid'; }
@@ -1502,6 +1544,7 @@ function renderScan(d){
         <span class="scan-sym">#${i+1} ${esc(r.symbol)}</span>
         <span class="scan-name">${esc(r.name)}</span>
         <span class="spacer"></span>
+        ${r.sector ? `<span class="scan-sector">${esc(r.sector)}</span>` : ''}
         ${fresh}
         <span class="badge ${c}">${esc(r.verdict)}</span>
         <span class="scan-score" title="composite 0-100">${r.score}</span>
@@ -1734,7 +1777,7 @@ async function delJournal(id){
    per-symbol cache the dashboard already fills, so switching views is a
    re-render, not a re-download. */
 let HEAT_VIEW='regime', LAST_HEAT=null;
-function openHeat(){ $('heat-modal').classList.add('open'); loadHeat(); }
+function openHeat(){ $('heat-modal').classList.add('open'); fillHeatScopes().then(loadHeat); }
 function closeHeat(){ $('heat-modal').classList.remove('open'); }
 function heatView(v){
   HEAT_VIEW=v;
@@ -1747,6 +1790,15 @@ function heatCoverage(d){
   return `<p class="heat-note" style="color:var(--amber)">Showing ${d.shown} of `+
          `${d.requested} names — a grid this size stops being readable beyond `+
          `${d.cap} rows. Use the scanner for the full ranked list.</p>`;
+}
+/* The heatmap's scope list is filled from the same taxonomy the scanner uses,
+   so the two can never offer different sets of sectors. */
+async function fillHeatScopes(){
+  const g = await loadScanGroups();
+  const opt = x => `<option value="${x.key}">${esc(x.name)} (${x.count})</option>`;
+  const secs = $('heat-sectors'), other = $('heat-other');
+  if(secs)  secs.innerHTML  = (g.sectors||[]).map(opt).join('');
+  if(other) other.innerHTML = ((g.other||[]).concat(g.styles||[])).map(opt).join('');
 }
 async function loadHeat(){
   const body=$('heat-body'); if(!body) return;
@@ -2215,26 +2267,7 @@ boot();
   <div class="modal-box">
     <div class="modal-head">
       <h3>⚡ Opportunity Scanner</h3>
-      <div class="seg" id="scan-seg">
-        <button data-u="full" class="on" onclick="setScanUniverse('full')"
-                title="Every tradable symbol your broker offers — swept continuously in the background">Everything</button>
-        <button data-u="market" onclick="setScanUniverse('market')"
-                title="~350 curated names across every sector">Curated</button>
-        <button data-u="midcap" onclick="setScanUniverse('midcap')"
-                title="High-beta growth &amp; momentum — where a flip is more likely to be early">Growth</button>
-        <button data-u="sector" onclick="setScanUniverse('sector')"
-                title="Sector &amp; theme ETFs — find which part of the market is turning">Sectors</button>
-        <button data-u="consumer" onclick="setScanUniverse('consumer')"
-                title="Consumer &amp; retail single names">Consumer</button>
-        <button data-u="health" onclick="setScanUniverse('health')">Health</button>
-        <button data-u="financial" onclick="setScanUniverse('financial')">Financials</button>
-        <button data-u="energy" onclick="setScanUniverse('energy')">Energy</button>
-        <button data-u="industrial" onclick="setScanUniverse('industrial')">Industrials</button>
-        <button data-u="semis" onclick="setScanUniverse('semis')">Semis</button>
-        <button data-u="megacap" onclick="setScanUniverse('megacap')">Mega</button>
-        <button data-u="crypto" onclick="setScanUniverse('crypto')">Crypto</button>
-        <button data-u="watchlist" onclick="setScanUniverse('watchlist')">Watchlist</button>
-      </div>
+      <div class="scan-nav" id="scan-seg"></div>
       <div class="spacer"></div>
       <button class="btn-x" onclick="closeScanner()">✕ Close</button>
     </div>
@@ -2316,20 +2349,8 @@ boot();
               title="Which set of symbols to map">
         <option value="watchlist">Watchlist</option>
         <option value="full">Top from full-market sweep</option>
-        <option value="market">Curated universe (354)</option>
-        <option value="megacap">Mega caps</option>
-        <option value="midcap">Growth &amp; momentum</option>
-        <option value="consumer">Consumer &amp; retail</option>
-        <option value="health">Healthcare</option>
-        <option value="financial">Financials</option>
-        <option value="energy">Energy &amp; utilities</option>
-        <option value="industrial">Industrials</option>
-        <option value="semis">Semiconductors</option>
-        <option value="software">Software</option>
-        <option value="telecom">Telecom &amp; media</option>
-        <option value="megacap_intl">International</option>
-        <option value="sector">Sector ETFs</option>
-        <option value="crypto">Crypto</option>
+        <optgroup label="Sectors" id="heat-sectors"></optgroup>
+        <optgroup label="Other" id="heat-other"></optgroup>
       </select>
       <div class="spacer"></div>
       <button class="btn-x" onclick="loadHeat()">⟳ Refresh</button>

@@ -44,6 +44,10 @@ from .market_data import (
 from .markov2 import Strategy
 from .news import fetch_news
 from .orders import OrderTicket, OrderValidationError
+from .sectors import ALL_GROUPS as _ALL_GROUPS
+from .sectors import equity_universe as _equity_universe
+from .sectors import full_universe as _full_universe
+from .sectors import sector_name
 from .telegram import TelegramError, TelegramNotifier, format_flip, format_scan
 from .webstate import _rsi, market_state, quote_state
 
@@ -70,85 +74,20 @@ SYMBOL_UNIVERSE = sorted(set(DEFAULT_SYMBOLS + [
 # Hunting grounds for the opportunity scanner. "market" is deliberately wide and
 # not just mega-caps — the obvious names are already picked over, so the mid-cap
 # and thematic groups are where a regime flip is more likely to be early.
-SCAN_GROUPS = {
-    "megacap": [
-        "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "NFLX",
-        "COST", "JPM", "V", "UNH", "LLY", "XOM", "HD", "WMT", "PG", "MA", "ORCL",
-    ],
-    "midcap": [
-        "PLTR", "COIN", "CRWD", "SNOW", "DDOG", "NET", "ZS", "PANW", "MDB", "TEAM",
-        "HOOD", "SOFI", "AFRM", "TOST", "RBLX", "DKNG", "ABNB", "UBER", "LYFT", "SHOP",
-        "SQ", "TTD", "ROKU", "PINS", "SNAP", "U", "PATH", "S", "OKTA", "TWLO",
-        "ETSY", "CHWY", "CVNA", "W", "WBD", "F", "GM", "RIVN", "LCID", "PLUG",
-        "ENPH", "FSLR", "RUN", "CHPT", "AI", "IONQ", "RKLB", "ASTS", "SMCI", "ARM",
-    ],
-    "sector": [
-        "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE",
-        "SMH", "IBB", "XBI", "ITB", "XRT", "XOP", "JETS", "KRE", "GDX", "URA",
-        "ARKK", "IWM", "DIA", "SPY", "QQQ", "EEM", "EFA", "TLT", "HYG", "GLD",
-    ],
-    "crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD"],
-    # The gap this closes: the groups above are tech and growth almost end to
-    # end, so a regime flip in Starbucks, Coca-Cola or Caterpillar could never
-    # reach an alert. These are the large, liquid names in the sectors that had
-    # no single-stock coverage at all — only a sector ETF standing in for them.
-    "consumer": [
-        "SBUX", "MCD", "NKE", "KO", "PEP", "DIS", "TGT", "LOW", "HD", "WMT",
-        "COST", "PG", "CL", "KMB", "GIS", "K", "HSY", "MDLZ", "KHC", "STZ",
-        "TAP", "MO", "PM", "YUM", "CMG", "DPZ", "DRI", "MAR", "HLT", "LVS",
-        "MGM", "RCL", "CCL", "NCLH", "EBAY", "BBY", "DG", "DLTR", "ROST", "TJX",
-        "ULTA", "LULU", "DECK", "VFC", "GPS", "M", "KR", "SYY", "EL", "CLX",
-    ],
-    "health": [
-        "UNH", "LLY", "JNJ", "PFE", "MRK", "ABBV", "ABT", "TMO", "DHR", "BMY",
-        "AMGN", "GILD", "CVS", "CI", "ELV", "HCA", "MDT", "SYK", "BSX", "ISRG",
-        "ZTS", "REGN", "VRTX", "BIIB", "MRNA", "IDXX", "EW", "DXCM", "ALGN", "HUM",
-    ],
-    "financial": [
-        "JPM", "BAC", "WFC", "GS", "MS", "C", "SCHW", "BLK", "BX", "KKR",
-        "AXP", "V", "MA", "PYPL", "COF", "USB", "PNC", "TFC", "BK", "STT",
-        "SPGI", "MCO", "ICE", "CME", "NDAQ", "AIG", "MET", "PRU", "ALL", "TRV",
-        "PGR", "CB", "BRK.B",
-    ],
-    "industrial": [
-        "CAT", "DE", "BA", "GE", "HON", "MMM", "LMT", "RTX", "NOC", "GD",
-        "UNP", "CSX", "NSC", "UPS", "FDX", "DAL", "UAL", "AAL", "LUV", "EMR",
-        "ETN", "PH", "ITW", "CMI", "PCAR", "ROK", "URI", "WM", "RSG", "JCI",
-    ],
-    "energy": [
-        "XOM", "CVX", "COP", "OXY", "SLB", "HAL", "BKR", "EOG", "PXD", "DVN",
-        "FANG", "HES", "MPC", "PSX", "VLO", "KMI", "WMB", "OKE", "LNG", "NEE",
-        "DUK", "SO", "D", "AEP", "EXC", "SRE", "XEL", "ED", "PEG", "FSLR",
-    ],
-    "telecom": [
-        "T", "VZ", "TMUS", "CMCSA", "CHTR", "WBD", "PARA", "FOXA", "NWSA", "OMC",
-        "IPG", "LYV", "EA", "TTWO", "MTCH", "SPOT", "NFLX", "DIS",
-    ],
-    "semis": [
-        "NVDA", "AMD", "INTC", "MU", "AVGO", "QCOM", "TXN", "ADI", "AMAT", "LRCX",
-        "KLAC", "NXPI", "MCHP", "ON", "SWKS", "QRVO", "MRVL", "TER", "ENTG", "ARM",
-        "SMCI", "TSM", "ASML",
-    ],
-    "software": [
-        "MSFT", "ORCL", "CRM", "ADBE", "NOW", "INTU", "IBM", "SAP", "WDAY", "ADSK",
-        "SNPS", "CDNS", "ANSS", "PTC", "TYL", "CSCO", "ANET", "JNPR", "FFIV", "AKAM",
-        "VMW", "DELL", "HPQ", "HPE", "NTAP", "STX", "WDC", "GLW", "KEYS", "APH",
-    ],
-    "megacap_intl": [
-        "SHEL", "BP", "UL", "AZN", "GSK", "DEO", "BCS", "HSBC", "NVO", "SNY",
-        "TM", "SONY", "HMC", "BABA", "PDD", "JD", "NTES", "BIDU", "INFY", "WIT",
-        "RIO", "BHP", "VALE", "TTE", "E", "MUFG", "SMFG", "ING", "BBVA", "SAN",
-    ],
-}
+# Scan groups are the sector taxonomy, so the scanner, the heatmap, the alerts
+# and the Telegram digest all navigate the same eleven sectors plus funds,
+# crypto and the two style cuts. See sectors.py for why the previous ad-hoc list
+# — a size, a sector and an asset class sitting in one bucket, with Real Estate,
+# Materials and Utilities missing entirely — was replaced.
+SCAN_GROUPS = {k: list(v["symbols"]) for k, v in _ALL_GROUPS.items()}
 
-# The default sweep: every group except crypto, deduplicated. A name that sits
-# in two groups (NVDA is both a mega-cap and a semi) must be scanned once.
-SCAN_UNIVERSE = list(dict.fromkeys(
-    s for name, group in SCAN_GROUPS.items() if name != "crypto" for s in group))
+# The default sweep: every classified equity, deduplicated. Funds sit out of it
+# because an index fund's regime is the market's regime, which the dashboard
+# already shows — a scan should surface individual names.
+SCAN_UNIVERSE = _equity_universe()
 
-# Everything above, plus crypto: the widest sweep that does not need a live
-# Alpaca connection to enumerate.
-SCAN_ALL = list(dict.fromkeys(SCAN_UNIVERSE + SCAN_GROUPS["crypto"]))
+# Everything curated: sectors, funds and crypto.
+SCAN_ALL = _full_universe()
 
 # Rows a heatmap can show before it stops being readable. The scanner ranks and
 # filters; the heatmap is for seeing a board at a glance, and a glance does not
@@ -1032,6 +971,27 @@ def create_app(state: AppState):
         result["universe"] = scope
         result["universeSize"] = len(syms)
         return result
+
+    @app.get("/api/groups")
+    def groups_endpoint():
+        """The navigation menu: sectors, then funds and crypto, then style cuts.
+
+        Served rather than hard-coded in the page so the taxonomy has exactly
+        one definition — sectors.py — and the UI cannot drift out of step with
+        what the scanner actually knows how to scan.
+        """
+        from .sectors import ALL_GROUPS, NON_EQUITY, SECTORS, STYLES
+
+        def block(d):
+            return [{"key": k, "name": v["name"], "blurb": v.get("blurb", ""),
+                     "count": len(v["symbols"])} for k, v in d.items() if k in ALL_GROUPS]
+
+        return {
+            "sectors": block({k: SECTORS[k] for k in ALL_GROUPS if k in SECTORS}),
+            "other": block(NON_EQUITY),
+            "styles": block(STYLES),
+            "universeSize": len(SCAN_UNIVERSE),
+        }
 
     @app.get("/api/sweep")
     def sweep_status():

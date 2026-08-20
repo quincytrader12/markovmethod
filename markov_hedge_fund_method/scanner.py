@@ -33,6 +33,8 @@ def _last(seq) -> float | None:
 
 def score_payload(p: dict) -> dict:
     """Score one symbol's HUD payload → {score, verdict, factors, rationale, …}."""
+    from .sectors import sector_name
+
     ticker = p.get("ticker", "?")
     name = p.get("name", "") or ""
     price = float(p.get("lastPrice") or 0.0)
@@ -137,6 +139,11 @@ def score_payload(p: dict) -> dict:
     return {
         "symbol": ticker,
         "name": name,
+        # Which sector this name belongs to, so a result list can be read by
+        # sector without cross-referencing. Blank for anything the full-market
+        # sweep turns up outside the curated map — Alpaca publishes no sector
+        # field, and a guess dressed as a classification is worse than a gap.
+        "sector": sector_name(ticker),
         "score": score,
         "verdict": verdict,
         "regime": regime,
