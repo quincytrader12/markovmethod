@@ -193,6 +193,21 @@
     padding:3px 11px; cursor:pointer; font-family:inherit; font-size:10px; letter-spacing:1px; font-weight:700}
   .scan-actions button:hover{background:var(--cyan); color:#171719}
   .scan-foot{padding:8px 15px; border-top:1px solid var(--edge); color:var(--dim); font-size:9.5px; line-height:1.4; flex:0 0 auto}
+  /* scan progress — a real percentage where one exists, a moving bar where it
+     does not. A fake percentage on a twenty-minute job is worse than none. */
+  .scan-load{padding:34px 30px; text-align:center}
+  .scan-load-head{color:var(--cyan); letter-spacing:1.5px; font-size:12px; text-transform:uppercase}
+  .scan-load-head.err{color:var(--red)}
+  .scan-load-note{color:var(--dim); font-size:10.5px; margin-top:9px; letter-spacing:.5px;
+    font-family:var(--mono)}
+  .pbar{position:relative; height:4px; margin:14px auto 0; max-width:460px; border-radius:3px;
+    background:#26272a; overflow:hidden}
+  .pbar i{display:block; height:100%; background:var(--cyan); border-radius:3px;
+    box-shadow:0 0 10px rgba(77,163,255,.55); transition:width .5s ease}
+  .pbar.indet i{width:38% !important; animation:sweepbar 1.15s ease-in-out infinite}
+  @keyframes sweepbar{
+    0%{transform:translateX(-110%)} 100%{transform:translateX(300%)}
+  }
   .scan-loading{padding:30px; text-align:center; color:var(--cyan); letter-spacing:1px}
   .scan-filters{display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:8px 15px;
     border-bottom:1px solid var(--edge); flex:0 0 auto; background:#191a1b}
@@ -1471,7 +1486,7 @@ async function removeAccount(name){
 /* ---------- opportunity scanner ---------- */
 let SCAN_U='full', LAST_SCAN={results:[]};
 function openScanner(){ renderScanNav(); $('scan-modal').classList.add('open'); runScan(); }
-function closeScanner(){ $('scan-modal').classList.remove('open'); }
+function closeScanner(){ stopScanProgress(); $('scan-modal').classList.remove('open'); }
 let SCAN_CUSTOM='';
 let SCAN_GROUPS_META = null;          // filled from /api/groups
 const SCAN_LABEL = {full:'every tradable symbol', watchlist:'your watchlist',
@@ -1540,16 +1555,93 @@ function runCustomScan(){
   runScan();
 }
 function applyScanFilters(){ runScan(); }   // filters are server-side but cache-backed → instant
-async function runScan(force){
+/* ---------- scan progress ----------
+   Two different kinds of waiting need two different indicators. A sector scan
+   is one request whose duration we cannot see inside, so it gets a moving bar
+   that says "working". The full-market sweep genuinely knows how far through
+   the market it is, so it gets a real percentage — a fake percentage on a job
+   that takes twenty minutes is worse than none. */
+let SCAN_PROGRESS = null;
+
+function scanLoadingHTML(where){
+  const known = SCAN_U === 'full' && !SCAN_CUSTOM;
+  return '<div class="scan-load">' +
+    '<div class="scan-load-head">Scanning ' + esc(where) + '</div>' +
+    '<div class="pbar' + (known ? '' : ' indet') + '"><i id="scan-bar" style="width:0%"></i></div>' +
+    '<div class="scan-load-note" id="scan-load-note">' +
+      (known ? 'reading the market sweep…' : 'running the regime engine on each name…') +
+    '</div></div>';
+}
+
+function stopScanProgress(){
+  if(SCAN_PROGRESS){ clearInterval(SCAN_PROGRESS); SCAN_PROGRESS = null; }
+}
+
+/* Only the full-market scope has real progress to report, so only it polls. */
+function startScanProgress(){
+  stopScanProgress();
+  if(SCAN_U !== 'full' || SCAN_CUSTOM) return;
+  const tick = async () => {
+    let sw; try{ sw = await api('/api/sweep'); }catch(e){ return; }
+    const bar = $('scan-bar'), note = $('scan-load-note');
+    if(!bar || !note) return stopScanProgress();
+    const pct = Math.round((sw.progress || 0) * 100);
+    bar.style.width = Math.max(pct, 2) + '%';
+    const cyc = sw.cycle > 0
+      ? `${sw.cycle} full pass${sw.cycle === 1 ? '' : 'es'} complete`
+      : 'first pass';
+    note.textContent = `${pct}% through the market · ${sw.scanned} names scored · ` +
+      `${sw.boardSize} on the board · ${cyc}`;
+  };
+  tick();
+  SCAN_PROGRESS = setInterval(tick, 2000);
+}
+
+function scanErrorHTML(msg, attempt){
+  const retrying = attempt > 0 && attempt <= SCAN_MAX_RETRY;
+  return '<div class="scan-load">' +
+    '<div class="scan-load-head err">Scan failed</div>' +
+    '<div class="scan-load-note">' + esc(msg) + '</div>' +
+    (retrying
+      ? '<div class="scan-load-note" id="scan-retry-note">retrying (' + attempt +
+        ' of ' + SCAN_MAX_RETRY + ')…</div>'
+      : '<div class="row" style="justify-content:center;margin-top:12px">' +
+        '<button class="btn-x" onclick="runScan(true)">⟳ Retry</button>' +
+        '<button class="btn-x" onclick="setScanUniverse(\'watchlist\')">Scan watchlist instead</button>' +
+        '</div>') +
+    '</div>';
+}
+
+const SCAN_MAX_RETRY = 2;
+let SCAN_SEQ = 0;
+
+async function runScan(force, attempt){
+  attempt = attempt || 0;
+  const seq = ++SCAN_SEQ;                 // a later scan must win over this one
   const list=$('scan-list');
   const where = SCAN_CUSTOM ? SCAN_LABEL.custom : (SCAN_LABEL[SCAN_U]||'the market');
-  list.innerHTML='<div class="scan-loading">Scanning '+esc(where)+
-    ' — running the regime engine on each name…</div>';
+  list.innerHTML = scanLoadingHTML(where);
   $('scan-foot').textContent='';
+  startScanProgress();
   try{
     const d=await api('/api/scan?'+scanQuery()+(force?'&_='+Date.now():''));
+    if(seq !== SCAN_SEQ) return;          // superseded while we waited
+    stopScanProgress();
     renderScan(d);
-  }catch(e){ list.innerHTML='<div class="scan-loading">scan failed: '+esc(e.message)+'</div>'; }
+  }catch(e){
+    if(seq !== SCAN_SEQ) return;
+    stopScanProgress();
+    // A blip on a background sweep is common and self-correcting, so try again
+    // a couple of times before making it the user's problem — then hand them a
+    // button rather than leaving a dead end on screen.
+    if(attempt < SCAN_MAX_RETRY){
+      list.innerHTML = scanErrorHTML(e.message, attempt + 1);
+      setTimeout(()=>{ if(seq === SCAN_SEQ) runScan(force, attempt + 1); },
+                 1500 * Math.pow(2, attempt));
+    }else{
+      list.innerHTML = scanErrorHTML(e.message, 0);
+    }
+  }
 }
 function sweepNote(d){
   // On the full-market scope the board is built up over time, so the footer has

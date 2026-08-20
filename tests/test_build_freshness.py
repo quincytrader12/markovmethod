@@ -122,3 +122,42 @@ def test_the_scanner_nav_says_so_when_it_cannot_load():
     which is exactly the wrong conclusion."""
     html = _client().get("/").text
     assert "Sectors unavailable" in html
+
+
+# ── scan progress and retry ─────────────────────────────────────────────────
+def test_the_scanner_shows_a_progress_bar():
+    html = _client().get("/").text
+    assert "scanLoadingHTML" in html and 'class="pbar' in html
+
+
+def test_only_the_full_sweep_gets_a_real_percentage():
+    """A fake percentage on a twenty-minute job is worse than none, so the
+    determinate bar is reserved for the one scope that actually knows."""
+    html = _client().get("/").text
+    assert "SCAN_U === 'full'" in html
+    assert "indet" in html, "there is no indeterminate state for scopes without progress"
+
+
+def test_progress_polling_stops_when_the_panel_closes():
+    html = _client().get("/").text
+    assert "function stopScanProgress" in html
+    assert "closeScanner(){ stopScanProgress()" in html, "it keeps polling behind a closed panel"
+
+
+def test_a_failed_scan_offers_a_retry():
+    html = _client().get("/").text
+    assert "scanErrorHTML" in html
+    assert "runScan(true)" in html and "Retry" in html
+
+
+def test_a_failed_scan_retries_itself_before_giving_up():
+    """A blip on a background sweep is common and self-correcting."""
+    html = _client().get("/").text
+    assert "SCAN_MAX_RETRY" in html
+    assert "runScan(force, attempt + 1)" in html
+
+
+def test_a_superseded_scan_cannot_overwrite_a_newer_one():
+    """Clicking three sectors quickly must not let the first response win."""
+    html = _client().get("/").text
+    assert "SCAN_SEQ" in html and "seq !== SCAN_SEQ" in html
