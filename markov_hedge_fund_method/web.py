@@ -163,6 +163,8 @@ class AppState:
         self.healer = Healer(self)
         from .pricestore import PriceStore
         self.prices = PriceStore()
+        from .watchlist import WatchlistStore
+        self.watchlist = WatchlistStore()
         from .sweep import MarketSweep
         self.sweep = MarketSweep(self)
         # Symbols the user is actually looking at, so the full-market sweep does
@@ -971,6 +973,28 @@ def create_app(state: AppState):
         result["universe"] = scope
         result["universeSize"] = len(syms)
         return result
+
+    @app.get("/api/watchlist")
+    def watchlist_get():
+        return {"symbols": state.watchlist.list()}
+
+    @app.post("/api/watchlist")
+    async def watchlist_add(request: Request):
+        data = await request.json()
+        if isinstance(data.get("symbols"), list):
+            return {"ok": True, "symbols": state.watchlist.replace(data["symbols"])}
+        symbol = str(data.get("symbol", "")).strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol is required")
+        return state.watchlist.add(symbol)
+
+    @app.post("/api/watchlist/remove")
+    async def watchlist_remove(request: Request):
+        data = await request.json()
+        symbol = str(data.get("symbol", "")).strip().upper()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol is required")
+        return state.watchlist.remove(symbol)
 
     @app.get("/api/groups")
     def groups_endpoint():

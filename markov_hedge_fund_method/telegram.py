@@ -115,14 +115,92 @@ class TelegramNotifier:
         return self.status()
 
     # ── sending ─────────────────────────────────────────────────────────────
-    def send(self, text: str) -> bool:
+    def send(self, text: str, buttons: list | None = None) -> dict:
+        """Send a message, optionally with tappable buttons under it.
+
+        `buttons` is a list of rows, each row a list of (label, data) pairs.
+        Telegram calls this an inline keyboard: tapping one sends a callback
+        back to the bot rather than posting a reply into the chat, which is what
+        lets an alert offer "add this to my watchlist" as a single tap.
+        """
         cfg = self.load()
         token, chat_id = cfg.get("token"), cfg.get("chatId")
         if not token or not chat_id:
             raise TelegramError("Telegram is not connected yet")
-        _call(token, "sendMessage", {
-            "chat_id": chat_id, "text": text[:4000],
-            "parse_mode": "HTML", "disable_web_page_preview": "true"})
+        params = {"chat_id": chat_id, "text": text[:4000],
+                  "parse_mode": "HTML", "disable_web_page_preview": "true"}
+        if buttons:
+            params["reply_markup"] = json.dumps({"inline_keyboard": [
+                [{"text": label, "callback_data": data[:64]} for label, data in row]
+                for row in buttons if row]})
+        return _call(token, "sendMessage", params) or {}
+
+    # ── replying to a tapped button ─────────────────────────────────────────
+    def poll_callbacks(self) -> list[dict]:
+        """Fetch button taps since the last poll.
+
+        Long polling rather than a webhook: a webhook needs a public URL, and
+        this is a desktop terminal. `offset` is the acknowledgement — asking for
+        `last_id + 1` is what tells Telegram the earlier updates are handled, so
+        a tap is never delivered twice.
+        """
+        cfg = self.load()
+        token = cfg.get("token")
+        if not token:
+            return []
+        params = {"limit": 20, "timeout": 0, "allowed_updates": json.dumps(["callback_query"])}
+        offset = cfg.get("updateOffset")
+        if offset:
+            params["offset"] = int(offset)
+        result = _call(token, "getUpdates", params)
+        updates = result if isinstance(result, list) else []
+        taps, last = [], None
+        for u in updates:
+            last = u.get("update_id", last)
+            cq = u.get("callback_query")
+            if not cq:
+                continue
+            taps.append({
+                "id": cq.get("id"),
+                "data": cq.get("data") or "",
+                "messageId": (cq.get("message") or {}).get("message_id"),
+                "chatId": ((cq.get("message") or {}).get("chat") or {}).get("id"),
+            })
+        if last is not None:
+            self.save(updateOffset=int(last) + 1)
+        return taps
+
+    def answer_callback(self, callback_id: str, text: str = "") -> bool:
+        """Acknowledge a tap so the button stops spinning on the phone.
+
+        Telegram shows the text as a small toast. Skipping this leaves the
+        button looking stuck even though the work was done.
+        """
+        cfg = self.load()
+        token = cfg.get("token")
+        if not token or not callback_id:
+            return False
+        try:
+            _call(token, "answerCallbackQuery",
+                  {"callback_query_id": callback_id, "text": text[:200]})
+        except TelegramError:
+            return False
+        return True
+
+    def edit_buttons(self, chat_id, message_id, buttons: list) -> bool:
+        """Redraw a message's buttons — used to mark one as done."""
+        cfg = self.load()
+        token = cfg.get("token")
+        if not token or message_id is None:
+            return False
+        try:
+            _call(token, "editMessageReplyMarkup", {
+                "chat_id": chat_id or cfg.get("chatId"), "message_id": message_id,
+                "reply_markup": json.dumps({"inline_keyboard": [
+                    [{"text": label, "callback_data": data[:64]} for label, data in row]
+                    for row in buttons if row]})})
+        except TelegramError:
+            return False
         return True
 
 
@@ -155,3 +233,43 @@ def format_flip(event: dict) -> str:
     return (f"{arrow} <b>{_esc(event.get('symbol', ''))}</b> regime flip: "
             f"{_esc(str(event.get('from', '')).upper())} → "
             f"<b>{_esc(str(event.get('to', '')).upper())}</b>")
+
+
+# ── buttons ─────────────────────────────────────────────────────────────────
+ADD_PREFIX = "add:"
+DONE_MARK = "✓ "
+
+
+def watch_buttons(symbols: list, per_row: int = 3, added: set | None = None) -> list:
+    """One "add to watchlist" button per symbol, laid out in rows.
+
+    Every name in a report gets its own button rather than one button for the
+    whole batch: an alert usually contains a few names and you rarely want all
+    of them. A symbol already on the list is shown ticked and inert, so the
+    keyboard doubles as a record of what you have already taken.
+    """
+    added = {s.upper() for s in (added or set())}
+    rows, row = [], []
+    for raw in symbols:
+        sym = str(raw).strip().upper()
+        if not sym:
+            continue
+        if sym in added:
+            row.append((f"{DONE_MARK}{sym}", f"{ADD_PREFIX}{sym}"))
+        else:
+            row.append((f"➕ {sym}", f"{ADD_PREFIX}{sym}"))
+        if len(row) >= per_row:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return rows
+
+
+def parse_callback(data: str) -> tuple[str, str]:
+    """('add', 'AAPL') from 'add:AAPL'. ('', '') for anything unrecognised."""
+    text = (data or "").strip()
+    if text.startswith(ADD_PREFIX):
+        sym = text[len(ADD_PREFIX):].strip().upper()
+        return ("add", sym) if sym else ("", "")
+    return ("", "")

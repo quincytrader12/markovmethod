@@ -23,6 +23,10 @@ from __future__ import annotations
 import threading
 import time
 
+# How often to check for a tapped button. Telegram's getUpdates is cheap and a
+# button that takes half an hour to respond may as well not be a button.
+TAP_POLL_SEC = 10
+
 DEFAULTS = {
     "autoScan": False,          # off until the user turns it on
     "scanIntervalMin": 30,
@@ -71,6 +75,9 @@ class ScanWatcher:
         self.last_run: float | None = None
         self.last_sent: int = 0
         self.last_error: str | None = None
+        # message id -> the symbols its keyboard offers, so a tap can redraw it
+        self._buttons_for: dict[int, list] = {}
+        self.last_taps: list = []
 
     # ── config ──────────────────────────────────────────────────────────────
     def config(self) -> dict:
@@ -113,7 +120,15 @@ class ScanWatcher:
                     self.run_once()
                 except Exception as exc:  # noqa: BLE001 — a bad cycle must not kill the loop
                     self.last_error = str(exc)
-            self._stop.wait(max(60, int(cfg["scanIntervalMin"]) * 60))
+            # Buttons are checked far more often than scans run: a tap should
+            # take effect in seconds, not on the next half-hourly sweep.
+            deadline = time.time() + max(60, int(cfg["scanIntervalMin"]) * 60)
+            while not self._stop.is_set() and time.time() < deadline:
+                try:
+                    self.handle_taps()
+                except Exception as exc:  # noqa: BLE001
+                    self.last_error = str(exc)
+                self._stop.wait(TAP_POLL_SEC)
 
     # ── one sweep ───────────────────────────────────────────────────────────
     def candidates(self, cfg: dict) -> list[dict]:
@@ -140,6 +155,45 @@ class ScanWatcher:
                 if (r.get("dsr") or 0.0) >= float(cfg["scanMinDsr"])
                 and (r.get("score") or 0) >= int(cfg["scanMinScore"])]
 
+    # ── button taps coming back from Telegram ───────────────────────────────
+    def handle_taps(self) -> list[dict]:
+        """Act on buttons tapped in the chat, then tell the phone what happened.
+
+        Three steps per tap and all three matter: do the thing, acknowledge the
+        callback so the button stops spinning, and redraw the keyboard so the
+        name shows as taken. Skipping the acknowledgement leaves a button that
+        looks broken even when the work succeeded.
+        """
+        from .telegram import parse_callback, watch_buttons
+
+        tg = self.state.telegram
+        if not tg.enabled:
+            return []
+        try:
+            taps = tg.poll_callbacks()
+        except Exception as exc:  # noqa: BLE001 — a poll failure is not fatal
+            self.last_error = str(exc)
+            return []
+
+        handled = []
+        for tap in taps:
+            action, symbol = parse_callback(tap.get("data", ""))
+            if action != "add":
+                continue
+            result = self.state.watchlist.add(symbol)
+            note = (f"{symbol} added to your watchlist" if result.get("added")
+                    else result.get("reason", "already on the watchlist"))
+            tg.answer_callback(tap.get("id"), note)
+            # Redraw this message's buttons so the tapped name reads as taken.
+            syms = self._buttons_for.get(tap.get("messageId"))
+            if syms:
+                tg.edit_buttons(tap.get("chatId"), tap.get("messageId"),
+                                watch_buttons(syms, added=set(self.state.watchlist.list())))
+            handled.append({"symbol": symbol, "added": bool(result.get("added"))})
+        if handled:
+            self.last_taps = handled
+        return handled
+
     def _is_new(self, symbol: str, cooldown_hours: float, now: float) -> bool:
         last = self._notified.get(symbol)
         return last is None or (now - last) >= cooldown_hours * 3600
@@ -159,11 +213,27 @@ class ScanWatcher:
         quiet = not should_send_now(cfg) and not force
         sent = 0
         if fresh and send and not quiet and self.state.telegram.enabled:
-            text = format_scan(fresh, min_score=int(cfg["scanMinScore"]), limit=6)
+            from .telegram import watch_buttons
+
+            limit = 6
+            text = format_scan(fresh, min_score=int(cfg["scanMinScore"]), limit=limit)
             if text:
                 header = (f"🔎 <b>New prospects</b> — {len(fresh)} name"
                           f"{'' if len(fresh) == 1 else 's'} cleared your filters\n\n")
-                self.state.telegram.send(header + text)
+                # One button per name in the digest, so each can be taken or
+                # left on its own. Names already held show ticked rather than
+                # offering to add something you have.
+                shown = [p["symbol"] for p in fresh[:limit]]
+                held = set(self.state.watchlist.list())
+                msg = self.state.telegram.send(
+                    header + text, buttons=watch_buttons(shown, added=held))
+                mid = (msg or {}).get("message_id")
+                if mid is not None:
+                    self._buttons_for[mid] = shown
+                    # Bounded: only recent messages can still be tapped usefully.
+                    if len(self._buttons_for) > 50:
+                        for k in sorted(self._buttons_for)[:-50]:
+                            self._buttons_for.pop(k, None)
                 sent = len(fresh)
                 for p in fresh:
                     self._notified[p["symbol"]] = now

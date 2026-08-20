@@ -52,7 +52,9 @@ def test_send_requires_connection(tmp_path, fake_api):
     with pytest.raises(TelegramError):
         n.send("hi")
     n.connect("tok123")
-    assert n.send("hello") is True
+    # send returns Telegram's result rather than a bare True, because the caller
+    # needs the message id to redraw that message's buttons after a tap.
+    assert isinstance(n.send("hello"), dict)
     assert fake_api[-1][1] == "sendMessage"
     assert fake_api[-1][2]["chat_id"] == "424242"
 

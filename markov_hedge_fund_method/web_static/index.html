@@ -787,13 +787,35 @@ async function refreshWatchlist(syms){
   }catch(e){ /* leave placeholders on failure */ }
 }
 async function refreshQuote(s){ return refreshWatchlist([s]); }
+/* The watchlist lives on the server now, so it survives a refresh and the
+   Telegram bot can add to the same list. The DOM is updated first and the
+   server told afterwards: a watchlist add should feel instant, and a failed
+   write is worth a line in the log, not a frozen click. */
 function ensureWatchlist(s){
   if(document.querySelector(`.wl .item[data-sym="${s}"]`)) return;
   $('watchlist').insertAdjacentHTML('afterbegin', wlItemHTML(s)); refreshQuote(s);
+  api('/api/watchlist',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({symbol:s})}).catch(e=>log('could not save watchlist: '+e.message,'warn'));
 }
 function removeFromWatchlist(s){
   const it=document.querySelector(`.wl .item[data-sym="${s}"]`); if(it) it.remove();
   log('removed '+s+' from watchlist','dim');
+  api('/api/watchlist/remove',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({symbol:s})}).catch(()=>{});
+}
+/* Pull the stored list on load, and again on a timer so a name added from the
+   phone shows up here without a refresh. */
+async function syncWatchlist(){
+  let d; try{ d = await api('/api/watchlist'); }catch(e){ return; }
+  const have = new Set(currentWatch());
+  const want = d.symbols || [];
+  const fresh = want.filter(s=>!have.has(s));
+  if(!fresh.length) return;
+  fresh.reverse().forEach(s=>{
+    $('watchlist').insertAdjacentHTML('afterbegin', wlItemHTML(s));
+  });
+  refreshWatchlist(fresh);
+  if(have.size) log('added from Telegram: '+fresh.join(', '),'ok');
 }
 function selectSymbol(s, addToWatch){
   s=(s||'').toUpperCase(); if(!s) return;
@@ -2255,9 +2277,11 @@ async function boot(){
   log('terminal online — Markov regime engine ready','ok');
   updateNotifyBtn();
   pollAlerts();
+  await syncWatchlist();          // restore the stored list, then keep it in step
   setInterval(()=>{ loadState(true); loadPortfolio(); }, 15000);
   setInterval(()=>{ loadNews(); }, 120000);
   setInterval(()=>refreshWatchlist(currentWatch()), 30000);
+  setInterval(syncWatchlist, 20000);   // picks up names added from the phone
   setInterval(pollAlerts, 20000);
 }
 boot();
