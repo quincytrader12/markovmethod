@@ -444,7 +444,7 @@
   .gf-fill{height:100%; background:linear-gradient(90deg,var(--red),var(--amber),var(--green))}
 
   /* chart */
-  .chartcard{flex:1; display:flex; flex-direction:column}
+  .chartcard{flex:1 1 auto; min-height:340px; display:flex; flex-direction:column}
   .chart-head{display:flex; align-items:baseline; gap:14px; margin-bottom:6px}
   .chart-head .price{font-size:26px; font-weight:700; color:var(--cyan2); text-shadow:var(--glow) var(--cyan)}
   .chart-head .sym{font-size:16px; font-weight:700; letter-spacing:2px; cursor:help}
@@ -467,7 +467,12 @@
   .zoom-tag.on:hover{background:rgba(77,163,255,.2)}
   .loading canvas.px{opacity:.35}
   /* news */
-  .news{display:flex; flex-direction:column; gap:5px; max-height:13vh; overflow:auto; flex:0 0 auto}
+  /* The centre column belongs to the chart and the headlines. News gets room to
+     show three or four items without scrolling; the chart takes everything the
+     news does not use. */
+  .newscard{flex:0 1 auto; min-height:0; display:flex; flex-direction:column}
+  .news{display:flex; flex-direction:column; gap:5px; min-height:96px; max-height:22vh;
+    overflow:auto; flex:1 1 auto}
   .news .item{display:flex; gap:9px; align-items:flex-start; padding:7px 8px; border:1px solid var(--edge);
     border-radius:3px; background:#1b1b1c}
   .news .item:hover{border-color:var(--cyan)}
@@ -482,7 +487,7 @@
   .news a.hl:hover{color:var(--cyan2)}
   .news .meta{color:var(--dim); font-size:10px; margin-top:2px; letter-spacing:1px}
   .osc{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:6px; flex:0 0 auto}
-  canvas.mini{width:100%; height:56px; display:block}
+  canvas.mini{width:100%; height:46px; display:block}
   .osc h3{margin:0 0 2px; font-size:10px; letter-spacing:2px; color:var(--dim); text-transform:uppercase}
 
   /* matrix */
@@ -552,9 +557,20 @@
   .timeline .now{color:var(--cyan2)}
   .timeline .flip{color:var(--dim); display:flex; gap:6px}
   .timeline .flip .d{color:var(--dim2)}
-  /* center bottom split */
-  .cbottom{display:grid; grid-template-columns:1fr 1fr; gap:10px; flex:0 0 auto}
-  @media (max-width:900px){ .cbottom{grid-template-columns:1fr} }
+  /* center bottom split — folded away by default so the chart and the news get
+     the height. The numbers themselves are not hidden, they move into the strip
+     below; the panels are only the long-form version of the same four figures. */
+  .cbottom{display:none; grid-template-columns:1fr 1fr; gap:10px; flex:0 0 auto}
+  .cbottom.on{display:grid}
+  @media (max-width:900px){ .cbottom.on{grid-template-columns:1fr} }
+  .cstrip{display:flex; align-items:center; gap:14px; flex-wrap:wrap; cursor:pointer;
+    background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--edge);
+    border-radius:4px; padding:6px 11px; font-size:11px; color:var(--dim);
+    letter-spacing:1px; flex:0 0 auto; user-select:none}
+  .cstrip:hover{border-color:var(--cyan)}
+  .cstrip .k{font-size:9px; text-transform:uppercase; letter-spacing:2px; color:var(--silver2)}
+  .cstrip b{color:var(--cyan2); font-family:var(--mono); font-weight:700; letter-spacing:0}
+  .cstrip .caret{margin-left:auto; color:var(--silver2); font-size:10px; letter-spacing:1px}
   canvas.equity{width:100%; height:82px; display:block}
   /* forecast */
   .forecast{display:flex; flex-direction:column; gap:10px}
@@ -676,7 +692,18 @@
         <h2>News · Sentiment <span class="tag" id="news-tag">—</span></h2>
         <div id="news" class="news"><div class="muted">loading headlines…</div></div>
       </div>
-      <div class="cbottom">
+      <div class="cstrip" id="cstrip" onclick="toggleBottom()"
+           title="Walk-forward result and regime forecast — click to open the full panels">
+        <span class="k">walk-forward</span>
+        <span>sharpe <b id="ms-sharpe">—</b></span>
+        <span>win <b id="ms-win">—</b></span>
+        <span>DD <b id="ms-dd">—</b></span>
+        <span>PSR <b id="ms-psr">—</b></span>
+        <span class="k">forecast</span>
+        <span id="ms-fc"><b>—</b></span>
+        <span class="caret" id="cstrip-caret">▾ EXPAND</span>
+      </div>
+      <div class="cbottom" id="cbottom">
         <div class="panel">
           <h2>Walk-forward <span class="tag">no-lookahead backtest</span></h2>
           <canvas id="equity" class="equity" width="760" height="150"></canvas>
@@ -1167,9 +1194,64 @@ function fillMax(){
   log(`max affordable ≈ ${max} sh of ${LAST.ticker} at $${fmt(LAST.lastPrice)}`,'dim');
 }
 
+/* ---------- centre column: chart and news first ----------
+   The walk-forward and forecast panels fold into a one-line strip so the price
+   chart and the headlines get the height. Nothing is lost — the strip carries
+   the same four figures, and the panels are the long-form version.
+   Their canvases have no size while folded, so opening has to redraw rather
+   than wait for the next poll, and the chart has to redraw too because its own
+   height just changed. */
+let BOTTOM_OPEN = false;
+try{ BOTTOM_OPEN = localStorage.getItem('mamba.bottom') === '1'; }catch(e){}
+
+function applyBottom(){
+  const box = $('cbottom'); if(!box) return;
+  box.classList.toggle('on', BOTTOM_OPEN);
+  const caret = $('cstrip-caret');
+  if(caret) caret.textContent = BOTTOM_OPEN ? '▴ HIDE' : '▾ EXPAND';
+}
+function toggleBottom(){
+  BOTTOM_OPEN = !BOTTOM_OPEN;
+  try{ localStorage.setItem('mamba.bottom', BOTTOM_OPEN ? '1' : '0'); }catch(e){}
+  applyBottom();
+  requestAnimationFrame(()=>{                 // after the new heights land
+    if(BOTTOM_OPEN && LAST) renderExtras(LAST);
+    if(TPO_ON) loadTPO(); else renderChart();
+  });
+}
+function renderStrip(m, fc){
+  const set=(id,txt,col)=>{ const e=$(id); if(!e) return; e.textContent=txt; if(col) e.style.color=col; };
+  set('ms-sharpe', m.sharpe==null?'—':fmt(m.sharpe,2), (m.sharpe||0)>=0?C.bull:C.bear);
+  set('ms-win', m.winRate==null?'—':fmt(m.winRate*100,1)+'%');
+  set('ms-dd', m.maxDrawdown==null?'—':fmt(m.maxDrawdown*100,1)+'%');
+  set('ms-psr', m.psr==null?'—':(m.psr*100).toFixed(0)+'%',
+      m.psr==null?'':(m.psr>=0.95?C.bull:m.psr>=0.8?'var(--amber)':C.bear));
+  // One horizon is enough for a strip; five days is the one the sizing uses.
+  const el=$('ms-fc'); if(!el) return;
+  const row = (fc||[]).find(r=>r.h===5) || (fc||[])[0];
+  if(!row){ el.innerHTML='<b>—</b>'; return; }
+  const rank = ['bull','bear','sideways'].sort((a,b)=>row[b]-row[a]);
+  const best = rank[0];
+  el.title = rank.map(k=>k+' '+Math.round(row[k]*100)+'%').join(' · ')+`  (${row.h}-day horizon)`;
+  // A three-way near-tie has a highest bar, but naming it states an edge the
+  // chain does not have. The panel shows the whole split; the strip should not
+  // turn a 35/34 into a call.
+  if(row[best] - row[rank[1]] < 0.05){
+    el.innerHTML = '<b style="color:var(--sideways)">MIXED</b>'+
+                   '<span style="color:var(--dim2)"> in '+row.h+'d</span>';
+    return;
+  }
+  const col = best==='bull'?C.bull:best==='bear'?C.bear:'var(--sideways)';
+  el.innerHTML = '<b style="color:'+col+'">'+best.toUpperCase()+' '+Math.round(row[best]*100)+'%</b>'+
+                 '<span style="color:var(--dim2)"> in '+row.h+'d</span>';
+}
+
 /* ---------- extra widgets: stationary, timeline, walk-forward, forecast ---------- */
 function renderExtras(st){
   drawDonut(st.stationary); renderStatLegend(st.stationary); renderTimeline(st.regimeTimeline);
+  renderStrip(st.metrics, st.forecast);
+  // A hidden canvas has no width, so drawing into it would only waste the work.
+  if(!BOTTOM_OPEN) return;
   drawEquity(st.metrics.equity, st.metrics.vt ? st.metrics.vt.equity : null);
   renderVT(st);
   $('wf-sharpe').textContent = st.metrics.sharpe==null?'—':fmt(st.metrics.sharpe,2);
@@ -2571,6 +2653,7 @@ async function checkBuild(){
 async function boot(){
   await loadConfig();
   checkBuild();
+  applyBottom();                  // restore whether the lower panels were open
   syncOrderFields();
   wireControls();
   await loadState(false);
