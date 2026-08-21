@@ -87,6 +87,8 @@ class Healer:
         self.repairs: int = 0
         # Background sweep failures: counted, not itemised. See note_fetch.
         self.quiet_failures: int = 0
+        # Symbols the feed publishes nothing for — counted, never listed.
+        self.no_data: set = set()
         self._thread = None
         self._stop = None
 
@@ -111,14 +113,20 @@ class Healer:
                 if not quiet:
                     self.log.record("data", f"{symbol} recovered live data", True)
             return
+        if quiet:
+            # Not a fault to be healed, so it does not belong in the retry
+            # schedule at all. "Currently on fallback data" is a list of things
+            # you might be looking at; a name the feed has never published is a
+            # permanent property of the market, and putting three thousand of
+            # them in that panel made it useless.
+            self.quiet_failures += 1
+            self.no_data.add(symbol)
+            return
         rec = self.data_failures.get(symbol, {"failures": 0, "nextTry": 0.0})
         rec["failures"] += 1
         rec["nextTry"] = time.monotonic() + retry_delay(rec["failures"])
         rec["reason"] = reason
         self.data_failures[symbol] = rec
-        if quiet:
-            self.quiet_failures += 1
-            return
         self.log.record("data", f"{symbol} fetch failed ({reason or 'no reason given'})", False)
 
     def should_retry(self, symbol: str) -> bool:
@@ -252,6 +260,7 @@ class Healer:
             "lastRun": self.last_run,
             "repairs": self.repairs,
             "quietFailures": self.quiet_failures,
+            "noData": len(self.no_data),
             "running": bool(self._thread and self._thread.is_alive()),
             "intervalSec": self.interval,
             "degraded": self.degraded_symbols(),

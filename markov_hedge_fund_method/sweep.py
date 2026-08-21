@@ -90,13 +90,54 @@ class MarketSweep:
         self.cycle = 0
         self.scanned = 0
         self.skipped = 0
-        # Symbols the feed publishes nothing for. Remembered so the sweep stops
-        # rediscovering the same dead tickers on every pass.
-        self.no_data: set = set()
+        # Symbols the feed publishes nothing for. Held on disk, not just in
+        # memory: an in-memory set is forgotten at every launch, and the market
+        # carries a few thousand of these, so a restart meant rediscovering
+        # every one of them the slow way before any real work got done. What a
+        # feed does not publish today it almost certainly will not publish
+        # tomorrow, so this is worth keeping.
+        self.no_data: set = self._load_no_data()
         self.last_chunk: float | None = None
         self.started: float | None = None
         self.last_error: str | None = None
         self.last_benchmark: dict | None = None
+
+    # ── remembering what has no data ────────────────────────────────────────
+    def _no_data_path(self) -> str:
+        import os
+
+        from .accounts import default_config_dir
+
+        return os.path.join(default_config_dir(), "no_data.json")
+
+    def _load_no_data(self) -> set:
+        import json
+
+        try:
+            with open(self._no_data_path(), encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, ValueError, OSError):
+            return set()
+        syms = data.get("symbols") if isinstance(data, dict) else data
+        return {str(x).upper() for x in syms} if isinstance(syms, list) else set()
+
+    def save_no_data(self) -> int:
+        """Persist the dead-symbol set. Best-effort — losing it costs time only."""
+        import json
+        import os
+
+        from .accounts import default_config_dir
+
+        try:
+            os.makedirs(default_config_dir(), exist_ok=True)
+            path = self._no_data_path()
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"symbols": sorted(self.no_data)}, f)
+            os.replace(tmp, path)
+        except OSError:
+            return 0
+        return len(self.no_data)
 
     # ── universe ────────────────────────────────────────────────────────────
     def build_universe(self) -> list[str]:
@@ -192,6 +233,7 @@ class MarketSweep:
 
         # Anything the fetch returned nothing for has no published data. Note it
         # once so future passes skip it instead of failing on it again.
+        before_dead = len(self.no_data)
         for sym in batch:
             if sym not in self.state._ohlc_cache:
                 self.no_data.add(sym)
@@ -221,6 +263,9 @@ class MarketSweep:
             self._trim()
             self.scanned += len(batch)
         self._evict(batch)
+
+        if len(self.no_data) != before_dead:
+            self.save_no_data()
 
         self.cursor += len(batch)
         if self.cursor >= len(self.universe):

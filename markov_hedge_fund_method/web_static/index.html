@@ -2084,13 +2084,24 @@ async function loadHealth(){
         'It never invents data and it never trades to fix anything.</p>';
   h+='<div class="heat-stats">'+
      '<div class="heat-stat"><b>'+d.repairs+'</b><span>REPAIRS MADE</span></div>'+
-     '<div class="heat-stat"><b>'+(d.degraded||[]).length+'</b><span>DEGRADED NOW</span></div>'+
+     '<div class="heat-stat"><b>'+(d.degradedTotal!=null?d.degradedTotal:(d.degraded||[]).length)+
+     '</b><span>DEGRADED NOW</span></div>'+
+     '<div class="heat-stat"><b>'+(d.noData||0)+'</b><span>NO DATA PUBLISHED</span></div>'+
      '<div class="heat-stat"><b>'+(d.running?'ON':'OFF')+'</b><span>AUTO-HEAL</span></div>'+
      '<div class="heat-stat"><b>'+when(d.lastRun)+'</b><span>LAST SWEEP</span></div></div>';
 
+  if(d.noData){
+    h+='<p class="heat-note" style="margin-top:12px">'+d.noData+' symbols carry no published '+
+       'price data — mostly over-the-counter ADRs your broker lists as tradable but never '+
+       'quotes. They are excluded from the sweep and remembered between sessions, so they '+
+       'cost nothing to skip. This is a property of the market, not a fault.</p>';
+  }
   if((d.degraded||[]).length){
     h+='<h2 style="font-size:11px;letter-spacing:2px;color:var(--amber);margin:14px 0 6px">'+
-       'CURRENTLY ON FALLBACK DATA</h2>';
+       'CURRENTLY ON FALLBACK DATA'+
+       (d.degradedTotal>(d.degraded||[]).length
+          ? ' <span style="color:var(--dim2)">— showing '+(d.degraded||[]).length+
+            ' of '+d.degradedTotal+'</span>' : '')+'</h2>';
     d.degraded.forEach(x=>{
       h+='<div class="hl-row"><span class="k">'+esc(x.symbol)+'</span>'+
          '<span class="hl-bad">'+esc(x.reason||'fetch failed')+'</span>'+

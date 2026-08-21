@@ -520,3 +520,42 @@ def test_the_sweep_reports_how_many_symbols_have_no_data():
     state = _state()
     state.sweep.no_data.update({"A", "B", "C"})
     assert state.sweep.status()["noData"] == 3
+
+
+def test_the_dead_symbol_set_survives_a_restart(tmp_path, monkeypatch):
+    """In memory it was forgotten every launch, so a few thousand OTC names got
+    rediscovered the slow way before any real work happened."""
+    import markov_hedge_fund_method.accounts as accounts
+    monkeypatch.setattr(accounts, "default_config_dir", lambda: str(tmp_path))
+
+    state = _state()
+    state.sweep.no_data.update({"NSRGY", "NTDOY", "DTEGY"})
+    assert state.sweep.save_no_data() == 3
+
+    from markov_hedge_fund_method.sweep import MarketSweep
+    reborn = MarketSweep(_state())
+    assert reborn.no_data == {"NSRGY", "NTDOY", "DTEGY"}
+
+
+def test_a_missing_or_corrupt_dead_list_starts_empty(tmp_path, monkeypatch):
+    import markov_hedge_fund_method.accounts as accounts
+    monkeypatch.setattr(accounts, "default_config_dir", lambda: str(tmp_path))
+    from markov_hedge_fund_method.sweep import MarketSweep
+
+    assert MarketSweep(_state()).no_data == set()
+    (tmp_path / "no_data.json").write_text("{ not json")
+    assert MarketSweep(_state()).no_data == set()
+
+
+def test_remembered_dead_symbols_are_excluded_from_the_universe(tmp_path, monkeypatch):
+    import markov_hedge_fund_method.accounts as accounts
+    monkeypatch.setattr(accounts, "default_config_dir", lambda: str(tmp_path))
+
+    class _B: pass
+    state = _state()
+    state.broker = _B()
+    state._alpaca_symbols = {"AAPL", "NTDOY"}
+    state._alpaca_names = {"AAPL": "Apple", "NTDOY": "Nintendo ADR"}
+    state._alpaca_exchange = {"AAPL": "NASDAQ", "NTDOY": "NASDAQ"}
+    state.sweep.no_data.add("NTDOY")
+    assert state.sweep.build_universe() == ["AAPL"]

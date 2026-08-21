@@ -340,10 +340,40 @@ def test_a_quiet_recovery_is_not_announced():
 
 
 def test_the_degraded_list_is_bounded():
-    """Thousands of dead OTC tickers in a panel tells you less than twenty-five."""
+    """A panel listing four hundred names tells you less than one listing 25.
+
+    Uses real failures, not quiet ones: quiet failures no longer reach this list
+    at all, so the bound has to be proved on the entries that do.
+    """
     h = Healer(_state())
     for i in range(400):
-        h.note_fetch(f"SYM{i}", False, "no bars", quiet=True)
+        h.note_fetch(f"SYM{i}", False, "connection reset")
     st = h.status()
     assert len(st["degraded"]) <= 25
     assert st["degradedTotal"] == 400, "the true count must still be reported"
+
+
+def test_a_symbol_with_no_published_data_is_not_called_degraded():
+    """Reported from live use: 150+ OTC ADRs filling 'CURRENTLY ON FALLBACK DATA'.
+
+    That panel answers "what that I might be looking at is broken". A name the
+    feed has never published is a permanent property of the market, not a fault
+    awaiting repair, and three thousand of them made the panel unreadable.
+    """
+    h = Healer(_state())
+    for sym in ("NSRGY", "NTDOY", "DTEGY", "HEINY", "BYDDY"):
+        h.note_fetch(sym, False, "no price bars published", quiet=True)
+    h.note_fetch("SPY", False, "connection reset")
+
+    st = h.status()
+    assert [d["symbol"] for d in st["degraded"]] == ["SPY"]
+    assert st["noData"] == 5, "they must still be counted"
+    assert st["degradedTotal"] == 1
+
+
+def test_dead_symbols_are_not_scheduled_for_retry():
+    """They were queued for retry forever, which is what produced the churn."""
+    h = Healer(_state())
+    h.note_fetch("NTDOY", False, "no bars", quiet=True)
+    assert h.should_retry("NTDOY") is False
+    assert "NTDOY" not in h.data_failures
