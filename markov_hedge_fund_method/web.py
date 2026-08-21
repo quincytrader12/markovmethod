@@ -964,6 +964,37 @@ def create_app(state: AppState):
         state._meta_size_cache.clear()
         return {"ok": True, "enabled": state.meta_sizing_enabled()}
 
+    @app.get("/api/tpo")
+    def tpo_endpoint(symbol: str = "SPY", tf: str = "1D", rows: int = 48,
+                     period: int = 30, value: float = 0.70):
+        """Market Profile for one session.
+
+        A profile is only worth reading if the bars underneath it are real, and
+        intraday is the flakiest data the terminal touches — free plans lack SIP,
+        some symbols have no intraday history at all. The source travels with the
+        payload so a profile built on placeholder bars is never presented as
+        though it described the market.
+        """
+        from .tpo import build_profile, open_type, summarise
+
+        symbol = symbol.strip().upper() or "SPY"
+        df, source = state.intraday_for(symbol, (tf or "1D").upper())
+        # 70% is the convention, not a law — it is one standard deviation of a
+        # normal distribution rounded off, and desks that prefer 68% or 80% are
+        # reading the same profile with a wider or narrower definition of value.
+        profile = build_profile(df, period_minutes=max(5, min(int(period), 120)),
+                                rows=max(12, min(int(rows), 120)),
+                                value_pct=max(0.30, min(float(value), 0.95)))
+        real = not str(source).startswith("synthetic")
+        return {
+            "symbol": symbol, "tf": (tf or "1D").upper(),
+            "dataSource": source, "real": real,
+            "profile": profile,
+            "openType": open_type(profile) if real else "",
+            "summary": (summarise(profile) if real else
+                        "Placeholder bars — this profile does not describe the market."),
+        }
+
     @app.get("/api/candles")
     def candles(symbol: str = "SPY", tf: str = "1D"):
         import pandas as pd

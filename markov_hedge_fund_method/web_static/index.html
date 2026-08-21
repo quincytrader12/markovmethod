@@ -193,6 +193,56 @@
     padding:3px 11px; cursor:pointer; font-family:inherit; font-size:10px; letter-spacing:1px; font-weight:700}
   .scan-actions button:hover{background:var(--cyan); color:#171719}
   .scan-foot{padding:8px 15px; border-top:1px solid var(--edge); color:var(--dim); font-size:9.5px; line-height:1.4; flex:0 0 auto}
+  /* ── TPO / market profile ─────────────────────────────────────────────── */
+  /* Letters are coloured by period, red through to violet across the session,
+     so the profile shows *when* each level traded as well as how long. Reading
+     a block of cyan high on the profile as "that happened late" is the whole
+     point of the scheme. */
+  .tpo-toggle{margin-left:8px; padding:2px 9px; cursor:pointer; border:1px solid var(--edge);
+    border-radius:3px; color:var(--dim); background:#1b1b1c; font-family:var(--mono);
+    font-size:10px; letter-spacing:1px; white-space:nowrap}
+  .tpo-toggle:hover{border-color:var(--cyan); color:var(--cyan)}
+  .tpo-toggle.on{background:var(--cyan); border-color:var(--cyan); color:#131314; font-weight:700}
+  #tpo-wrap{display:none; flex:1 1 0; min-height:110px; overflow:auto; padding:6px 0 2px}
+  #tpo-wrap.on{display:block}
+  .tpo-row{display:flex; align-items:center; height:12px; font-family:var(--mono); font-size:9px;
+    white-space:nowrap}
+  .tpo-row .px{width:62px; text-align:right; padding-right:7px; color:var(--dim2); flex:0 0 auto;
+    font-size:9px}
+  .tpo-row .ib{width:3px; height:12px; margin-right:4px; flex:0 0 auto; background:transparent}
+  .tpo-row.inib .ib{background:var(--green)}
+  .tpo-cells{display:flex; gap:1px}
+  .tpo-cells i{display:inline-flex; align-items:center; justify-content:center;
+    width:11px; height:11px; border-radius:1px; font-style:normal; font-weight:700;
+    font-size:8px; color:#0d0d0e; line-height:1}
+  /* Value area gets a faint ground; the POC row is called out in amber. */
+  .tpo-row.inva{background:rgba(77,163,255,.07)}
+  .tpo-row.poc{background:rgba(245,196,81,.14)}
+  .tpo-row.poc .px{color:var(--amber); font-weight:700}
+  .tpo-row.single .px{color:var(--red)}
+  /* The three levels a profile is read by, marked rather than implied. */
+  .tpo-row.vah,.tpo-row.val{background:rgba(77,163,255,.16)}
+  .tpo-row.vah{box-shadow:inset 0 1px 0 var(--cyan)}
+  .tpo-row.val{box-shadow:inset 0 -1px 0 var(--cyan)}
+  .tpo-row.poc{box-shadow:inset 0 1px 0 var(--amber), inset 0 -1px 0 var(--amber)}
+  .tpo-row.vah .px,.tpo-row.val .px{color:var(--cyan); font-weight:700}
+  .tpo-tag{margin-left:8px; font-size:8px; letter-spacing:1px; font-weight:700; padding:0 4px;
+    border-radius:2px; align-self:center}
+  .tpo-tag.poc{background:var(--amber); color:#131314}
+  .tpo-tag.vah,.tpo-tag.val{background:var(--cyan); color:#131314}
+  .tpo-ctl{display:flex; gap:6px; padding:2px 4px 6px}
+  .tpo-ctl select{background:#1b1b1c; border:1px solid var(--edge); color:var(--ink);
+    font-family:var(--mono); font-size:9.5px; letter-spacing:.5px; padding:3px 6px;
+    border-radius:3px; cursor:pointer}
+  .tpo-ctl select:hover{border-color:var(--cyan)}
+  .tpo-legend{display:flex; gap:14px; flex-wrap:wrap; padding:9px 4px 2px; color:var(--dim);
+    font-size:9.5px; letter-spacing:.5px; align-items:center}
+  .tpo-legend b{color:var(--ink); font-family:var(--mono)}
+  .tpo-ramp{display:flex; gap:1px; align-items:center}
+  .tpo-ramp i{display:block; width:9px; height:9px; border-radius:1px; font-style:normal}
+  .tpo-head{padding:2px 4px 7px; color:var(--dim); font-size:10.5px; line-height:1.5}
+  .tpo-head b{color:var(--ink)}
+  .tpo-warn{color:var(--amber)}
   /* scan progress — a real percentage where one exists, a moving bar where it
      does not. A fake percentage on a twenty-minute job is worse than none. */
   .scan-load{padding:34px 30px; text-align:center}
@@ -609,11 +659,14 @@
             <button data-tf="126" class="on">6M</button><button data-tf="252">1Y</button>
             <button data-tf="504">2Y</button>
           </span>
+          <span class="tpo-toggle" id="tpo-toggle" onclick="toggleTPO()"
+                title="Market Profile — where price spent its time, not just where it went">▦ TPO</span>
           <span class="zoom-tag" id="zoom-tag" onclick="resetZoom()"
                 title="scroll to zoom · drag to pan · double-click to reset"></span>
         </div>
         <div class="sig" id="c-sig"></div>
         <canvas class="px" id="chart" width="1600" height="680"></canvas>
+        <div id="tpo-wrap"></div>
         <div class="osc">
           <div><h3>Momentum (20d %)</h3><canvas class="mini" id="mom" width="760" height="180"></canvas></div>
           <div><h3>RSI (14)</h3><canvas class="mini" id="rsi" width="760" height="180"></canvas></div>
@@ -845,6 +898,7 @@ function selectSymbol(s, addToWatch){
   VIEW = null;                               // a new series starts unzoomed
   META_OVERRIDE=false;                       // a new symbol is a new decision
   loadState(false); loadNews(); loadPortfolio(); refreshMetaSizing();
+  if(TPO_ON) loadTPO();
 }
 /* validate against Alpaca (when connected) before adding a searched symbol */
 function pickSymbol(raw){
@@ -1039,6 +1093,8 @@ async function loadIntraday(){
 }
 function setTF(v, btn){
   TF = v; VIEW = null;
+  if(TPO_ON){ document.querySelectorAll('#tfbar button').forEach(b=>b.classList.toggle('on', b===btn));
+              return loadTPO(); }
   document.querySelectorAll('#tfbar button').forEach(b=>b.classList.toggle('on', b===btn));
   refreshChart();
 }
@@ -1555,6 +1611,119 @@ function runCustomScan(){
   runScan();
 }
 function applyScanFilters(){ runScan(); }   // filters are server-side but cache-backed → instant
+
+/* ---------- TPO / Market Profile ----------
+   A candlestick says where price went; a profile says where it spent its time.
+   Time at a level is the market accepting it as fair, so the widest row is the
+   fairest price of the session and the band around it is value. */
+let TPO_ON = false, TPO_DATA = null;
+let TPO_VA = 0.70;          // what counts as "value" — 70% is convention, not law
+let TPO_PERIOD = 30;        // minutes per letter
+
+function setTpoValue(v){ TPO_VA = parseFloat(v) || 0.70; loadTPO(); }
+function setTpoPeriod(v){ TPO_PERIOD = parseInt(v, 10) || 30; loadTPO(); }
+
+function tpoControls(){
+  const va = [0.60, 0.68, 0.70, 0.75, 0.80].map(v =>
+    '<option value="'+v+'"'+(Math.abs(v-TPO_VA)<1e-9?' selected':'')+'>'+
+    Math.round(v*100)+'% value area</option>').join('');
+  const per = [5, 15, 30, 60].map(v =>
+    '<option value="'+v+'"'+(v===TPO_PERIOD?' selected':'')+'>'+v+'-min periods</option>').join('');
+  return '<div class="tpo-ctl">'+
+    '<select onchange="setTpoValue(this.value)" title="How much of the session\'s time counts as value. '+
+      '70% is the convention — one standard deviation, rounded.">'+va+'</select>'+
+    '<select onchange="setTpoPeriod(this.value)" title="Minutes per letter. Thirty is standard; '+
+      'shorter periods give a finer profile on a quiet session.">'+per+'</select>'+
+    '</div>';
+}
+
+function toggleTPO(){
+  TPO_ON = !TPO_ON;
+  $('tpo-toggle').classList.toggle('on', TPO_ON);
+  $('tpo-wrap').classList.toggle('on', TPO_ON);
+  $('chart').style.display = TPO_ON ? 'none' : 'block';
+  document.querySelector('.osc').style.display = TPO_ON ? 'none' : '';
+  if(TPO_ON) loadTPO(); else renderChart();
+}
+
+async function loadTPO(){
+  const wrap = $('tpo-wrap'); if(!wrap) return;
+  const tf = (typeof TF === 'string') ? TF : '1D';   // a profile is a session
+  wrap.innerHTML = '<div class="tpo-head">Building the profile…</div>';
+  try{
+    TPO_DATA = await api('/api/tpo?symbol='+encodeURIComponent(SYMBOL)+
+      '&tf='+encodeURIComponent(tf)+'&value='+TPO_VA+'&period='+TPO_PERIOD);
+    renderTPO();
+  }catch(e){
+    wrap.innerHTML = '<div class="tpo-head tpo-warn">profile failed: '+esc(e.message)+
+      ' <button class="btn-x" onclick="loadTPO()">⟳ Retry</button></div>';
+  }
+}
+
+/* Period -> colour. Red at the open through to violet at the close, which is
+   the convention these charts use and the reason the profile reads as a heat
+   map: warm letters are early trade, cool letters are late. */
+function tpoColour(i, n){
+  const t = n > 1 ? i / (n - 1) : 0;
+  return 'hsl(' + Math.round(4 + t * 268) + ',85%,58%)';
+}
+
+function renderTPO(){
+  const wrap = $('tpo-wrap'), d = TPO_DATA; if(!wrap || !d) return;
+  const p = d.profile || {};
+  if(!p.rows || !p.rows.length){
+    wrap.innerHTML = '<div class="tpo-head tpo-warn">No intraday bars for '+esc(d.symbol)+
+      ' — a profile needs them.</div>'; return;
+  }
+  const letters = p.letters || [];
+  const idxOf = {};
+  letters.forEach((l, i) => { idxOf[l] = i; });
+  const singles = new Set((p.singlePrints || []).map(Number));
+
+  let h = tpoControls();
+  if(!d.real){
+    h += '<div class="tpo-head tpo-warn">⚠ '+esc(d.summary)+'<br>Source: '+esc(d.dataSource)+'</div>';
+  }else{
+    h += '<div class="tpo-head">'+esc(d.summary)+
+         (d.openType ? '<br>'+esc(d.openType) : '')+'</div>';
+  }
+
+  // Highest price at the top, the way a profile is always drawn.
+  h += [...p.rows].reverse().map(r=>{
+    const cls = ['tpo-row'];
+    // The three levels a profile is read by get an explicit line and a label,
+    // rather than being left for the eye to infer from a shaded band.
+    let tag = '';
+    if(r.price === p.poc){ cls.push('poc'); tag = 'POC'; }
+    else if(r.price === p.vah){ cls.push('vah'); tag = 'VAH'; }
+    else if(r.price === p.val){ cls.push('val'); tag = 'VAL'; }
+    else if(p.val != null && r.price > p.val && r.price < p.vah) cls.push('inva');
+    if(singles.has(r.price)) cls.push('single');
+    if(p.ibLow != null && r.price >= p.ibLow && r.price <= p.ibHigh) cls.push('inib');
+    const cells = (r.letters || '').split('').map(ch =>
+      '<i style="background:'+tpoColour(idxOf[ch] ?? 0, letters.length)+'">'+esc(ch)+'</i>'
+    ).join('');
+    return '<div class="'+cls.join(' ')+'"><span class="px">'+fmt(r.price,2)+
+           '</span><span class="ib"></span><span class="tpo-cells">'+cells+'</span>'+
+           (tag ? '<span class="tpo-tag '+tag.toLowerCase()+'">'+tag+'</span>' : '')+'</div>';
+  }).join('');
+
+  const ramp = letters.map((l,i)=>'<i style="background:'+tpoColour(i, letters.length)+
+                                  '" title="period '+esc(l)+'"></i>').join('');
+  h += '<div class="tpo-legend">'+
+    '<span>POC <b>'+fmt(p.poc,2)+'</b></span>'+
+    '<span>Value <b>'+fmt(p.val,2)+'–'+fmt(p.vah,2)+'</b> ('+Math.round((p.valuePct||0.7)*100)+'%)</span>'+
+    '<span>Initial balance <b>'+fmt(p.ibLow,2)+'–'+fmt(p.ibHigh,2)+'</b></span>'+
+    '<span>Range <b>'+fmt(p.low,2)+'–'+fmt(p.high,2)+'</b></span>'+
+    '<span>TPOs <b>'+p.totalTpo+'</b></span>'+
+    '<span>Shape <b>'+esc(p.shape)+'</b></span>'+
+    '<span>Extension <b>'+esc(p.rangeExtension)+'</b></span>'+
+    '<span>Singles <b>'+(p.singlePrints||[]).length+'</b></span>'+
+    '<span>open <span class="tpo-ramp">'+ramp+'</span> close</span>'+
+    '</div>';
+  wrap.innerHTML = h;
+}
+
 /* ---------- scan progress ----------
    Two different kinds of waiting need two different indicators. A sector scan
    is one request whose duration we cannot see inside, so it gets a moving bar
