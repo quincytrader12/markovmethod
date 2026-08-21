@@ -293,7 +293,12 @@ class AlpacaBroker:
         assets = self.client.get_all_assets(
             GetAssetsRequest(status=AssetStatus.ACTIVE, asset_class=AssetClass.US_EQUITY)
         )
-        return [{"symbol": a.symbol, "name": getattr(a, "name", "") or ""}
+        return [{"symbol": a.symbol, "name": getattr(a, "name", "") or "",
+                 # Alpaca marks thousands of OTC names tradable but publishes no
+                 # bars for them. The exchange is the only dependable way to
+                 # tell them apart from a NASDAQ listing.
+                 "exchange": str(getattr(getattr(a, "exchange", ""), "value",
+                                         getattr(a, "exchange", "")) or "")}
                 for a in assets if getattr(a, "tradable", False)]
 
 

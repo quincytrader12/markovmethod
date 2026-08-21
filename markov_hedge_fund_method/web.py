@@ -188,6 +188,7 @@ class AppState:
         self._news_cache: dict[str, tuple[float, list]] = {}
         self._alpaca_symbols: set[str] | None = None
         self._alpaca_names: dict[str, str] = {}
+        self._alpaca_exchange: dict[str, str] = {}
         self._alpaca_sorted: list[str] = []
         self._alpaca_index: dict[str, list[str]] = {}
         import threading as _threading
@@ -206,6 +207,7 @@ class AppState:
         self._ohlc_cache.clear()
         self._alpaca_symbols = None  # and a different asset universe
         self._alpaca_names = {}
+        self._alpaca_exchange = {}
         self._alpaca_sorted = []
         self._alpaca_index = {}
         self.prewarm_universe()      # reload in the background, never blocking
@@ -226,8 +228,9 @@ class AppState:
                 assets = self.broker.list_tradable_assets()  # [{symbol, name}]
                 symbols = {a["symbol"] for a in assets}
                 names = {a["symbol"]: a["name"] for a in assets if a.get("name")}
+                exch = {a["symbol"]: a.get("exchange", "") for a in assets}
             except Exception:  # noqa: BLE001 — cache empty to avoid refetch storms
-                symbols, names = set(), {}
+                symbols, names, exch = set(), {}, {}
             # Precompute once: sorted list + first-letter buckets, so a keystroke
             # is a dict hit over a few hundred names instead of a full re-scan.
             ordered = sorted(symbols)
@@ -235,6 +238,7 @@ class AppState:
             for sym in ordered:
                 index.setdefault(sym[:1], []).append(sym)
             self._alpaca_names = names
+            self._alpaca_exchange = exch
             self._alpaca_sorted = ordered
             self._alpaca_index = index
             self._alpaca_symbols = symbols       # set last — it is the ready flag
@@ -608,7 +612,8 @@ class AppState:
 
         for sym, df in frames.items():
             self._ohlc_cache[sym] = (time.monotonic(), df, "live")
-            self.healer.note_fetch(sym, True)
+            # Bulk sweep traffic: counted, never itemised into the health log.
+            self.healer.note_fetch(sym, True, quiet=True)
             for c in (self._state_cache, self._state_vol_cache, self._state_meta_cache):
                 c.pop(sym, None)
         self.prices.flush()

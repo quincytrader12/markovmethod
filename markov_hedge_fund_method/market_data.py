@@ -45,6 +45,11 @@ def _ohlc_columns(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         df.columns = df.columns.get_level_values(0)
     cols = {c.lower(): c for c in df.columns}
+    if not {"open", "high", "low", "close"} <= set(cols):
+        # What a symbol with no price coverage looks like on the way back: a
+        # frame missing the columns entirely. The old KeyError('open') reported
+        # the symptom; the news is that the feed has no bars for this name.
+        raise ValueError("no price bars published for this symbol")
     out = pd.DataFrame({
         "Open": df[cols["open"]], "High": df[cols["high"]],
         "Low": df[cols["low"]], "Close": df[cols["close"]],

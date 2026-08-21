@@ -85,24 +85,40 @@ class Healer:
         self.data_failures: dict[str, dict] = {}
         self.last_run: float | None = None
         self.repairs: int = 0
+        # Background sweep failures: counted, not itemised. See note_fetch.
+        self.quiet_failures: int = 0
         self._thread = None
         self._stop = None
 
     # ── data feed ───────────────────────────────────────────────────────────
-    def note_fetch(self, symbol: str, ok: bool, reason: str = "") -> None:
-        """Record the outcome of a price fetch and schedule the next attempt."""
+    def note_fetch(self, symbol: str, ok: bool, reason: str = "",
+                   quiet: bool = False) -> None:
+        """Record the outcome of a price fetch and schedule the next attempt.
+
+        `quiet` is for the full-market sweep. This log exists to tell you that
+        something you care about has broken and been repaired; a sweep working
+        through eleven thousand tickers will meet thousands with no published
+        price data, and that is a normal property of the market rather than a
+        fault. Logging each one buried the real entries under a wall of noise.
+        Quiet failures still count, and the count is reported — they just do not
+        each get a line.
+        """
         symbol = symbol.upper()
         if ok:
             if symbol in self.data_failures:
                 self.data_failures.pop(symbol, None)
                 self.repairs += 1
-                self.log.record("data", f"{symbol} recovered live data", True)
+                if not quiet:
+                    self.log.record("data", f"{symbol} recovered live data", True)
             return
         rec = self.data_failures.get(symbol, {"failures": 0, "nextTry": 0.0})
         rec["failures"] += 1
         rec["nextTry"] = time.monotonic() + retry_delay(rec["failures"])
         rec["reason"] = reason
         self.data_failures[symbol] = rec
+        if quiet:
+            self.quiet_failures += 1
+            return
         self.log.record("data", f"{symbol} fetch failed ({reason or 'no reason given'})", False)
 
     def should_retry(self, symbol: str) -> bool:
@@ -115,12 +131,20 @@ class Healer:
         rec = self.data_failures.get(symbol.upper())
         return bool(rec) and time.monotonic() >= rec["nextTry"]
 
-    def degraded_symbols(self) -> list[dict]:
+    def degraded_symbols(self, limit: int = 25) -> list[dict]:
+        """Symbols currently on fallback data, newest trouble first.
+
+        Bounded: a full-market sweep can put thousands of never-published OTC
+        tickers in here, and a panel listing three thousand names tells you
+        less than one listing twenty-five.
+        """
         now = time.monotonic()
-        return [{"symbol": s, "failures": r["failures"],
+        rows = [{"symbol": s, "failures": r["failures"],
                  "retryInSec": max(0.0, round(r["nextTry"] - now, 1)),
                  "reason": r.get("reason", "")}
-                for s, r in sorted(self.data_failures.items())]
+                for s, r in self.data_failures.items()]
+        rows.sort(key=lambda r: (-r["failures"], r["symbol"]))
+        return rows[:limit]
 
     # ── positions vs journal ────────────────────────────────────────────────
     def reconcile_positions(self) -> dict:
@@ -227,9 +251,11 @@ class Healer:
         return {
             "lastRun": self.last_run,
             "repairs": self.repairs,
+            "quietFailures": self.quiet_failures,
             "running": bool(self._thread and self._thread.is_alive()),
             "intervalSec": self.interval,
             "degraded": self.degraded_symbols(),
+            "degradedTotal": len(self.data_failures),
             "log": self.log.recent(),
             **self.log.counts(),
         }

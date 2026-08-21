@@ -308,3 +308,42 @@ def test_index_has_the_health_panel():
     html = _client().get("/").text
     assert "openHealth" in html and "Self-Healing" in html
     assert "/api/health" in html and "retryFeed" in html
+
+
+# ── the sweep must not drown the log it shares with real faults ─────────────
+def test_sweep_failures_are_counted_not_itemised():
+    """Reported from live use: the health panel filled with OTC tickers.
+
+    A full-market sweep meets thousands of names with no published price data.
+    That is a property of the market, not a fault, and logging each one buries
+    the entries that mean something.
+    """
+    h = Healer(_state())
+    for sym in ("AMKBY", "AMIGY", "ALZIF", "ALPMY", "ALIZY"):
+        h.note_fetch(sym, False, "no price bars published", quiet=True)
+    assert h.log.entries == [], "the sweep is filling the log again"
+    assert h.status()["quietFailures"] == 5, "quiet does not mean uncounted"
+
+
+def test_a_symbol_the_user_cares_about_is_still_logged():
+    h = Healer(_state())
+    h.note_fetch("AMKBY", False, "no bars", quiet=True)
+    h.note_fetch("SPY", False, "connection reset")
+    assert [e["detail"] for e in h.log.recent()] == ["SPY fetch failed (connection reset)"]
+
+
+def test_a_quiet_recovery_is_not_announced():
+    h = Healer(_state())
+    h.note_fetch("AMKBY", False, "no bars", quiet=True)
+    h.note_fetch("AMKBY", True, quiet=True)
+    assert h.log.entries == []
+
+
+def test_the_degraded_list_is_bounded():
+    """Thousands of dead OTC tickers in a panel tells you less than twenty-five."""
+    h = Healer(_state())
+    for i in range(400):
+        h.note_fetch(f"SYM{i}", False, "no bars", quiet=True)
+    st = h.status()
+    assert len(st["degraded"]) <= 25
+    assert st["degradedTotal"] == 400, "the true count must still be reported"

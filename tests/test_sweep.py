@@ -466,3 +466,57 @@ def test_the_sweep_reports_what_it_skipped():
     state = _state()
     state.sweep.run_chunk()
     assert "skipped" in state.sweep.status()
+
+
+# ── OTC listings: tradable, but no bars are ever published for them ─────────
+def test_otc_exchanges_are_recognised():
+    from markov_hedge_fund_method.sweep import is_otc
+    assert is_otc("OTC") and is_otc("otc") and is_otc("PINK")
+    assert not is_otc("NASDAQ") and not is_otc("NYSE") and not is_otc("")
+
+
+def test_otc_listings_are_kept_out_of_the_sweep():
+    """The bug from live use: every one was a guaranteed failed fetch, retried
+    on every pass forever."""
+    class _B: pass
+    state = _state()
+    state.broker = _B()
+    otc = ["AMKBY", "AMIGY", "ALZIF", "ADDYY"]
+    good = ["AAPL", "MSFT"]
+    state._alpaca_symbols = set(otc + good)
+    state._alpaca_names = {s: "ADR" for s in otc} | {s: "Co" for s in good}
+    state._alpaca_exchange = {s: "OTC" for s in otc} | {s: "NASDAQ" for s in good}
+
+    uni = state.sweep.build_universe()
+    assert sorted(uni) == ["AAPL", "MSFT"]
+    assert not any(s in uni for s in otc)
+
+
+def test_a_symbol_with_no_data_is_not_rediscovered():
+    class _B: pass
+    state = _state()
+    state.broker = _B()
+    state._alpaca_symbols = {"AAPL", "GHOST"}
+    state._alpaca_names = {"AAPL": "Apple", "GHOST": "Ghost Co"}
+    state._alpaca_exchange = {"AAPL": "NASDAQ", "GHOST": "NASDAQ"}
+    assert "GHOST" in state.sweep.build_universe()
+
+    state.sweep.no_data.add("GHOST")
+    assert "GHOST" not in state.sweep.build_universe()
+
+
+def test_missing_exchange_data_does_not_exclude_a_symbol():
+    """Absence of an exchange field is not evidence of an OTC listing."""
+    class _B: pass
+    state = _state()
+    state.broker = _B()
+    state._alpaca_symbols = {"AAPL"}
+    state._alpaca_names = {"AAPL": "Apple"}
+    state._alpaca_exchange = {}
+    assert state.sweep.build_universe() == ["AAPL"]
+
+
+def test_the_sweep_reports_how_many_symbols_have_no_data():
+    state = _state()
+    state.sweep.no_data.update({"A", "B", "C"})
+    assert state.sweep.status()["noData"] == 3

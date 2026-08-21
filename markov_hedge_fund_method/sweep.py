@@ -56,6 +56,14 @@ IDLE_POLL = 0.25
 _SKIP_WORDS = ("warrant", "unit", " right", "rights", "preferred", "depositary",
                "when issued", "when-issued", "notes due", "%")
 
+# Alpaca marks OTC names tradable but publishes no bars for them, so a sweep
+# that includes them spends its time collecting guaranteed failures.
+_OTC_EXCHANGES = {"OTC", "OTCM", "OTCBB", "PINK", "GREY"}
+
+
+def is_otc(exchange: str) -> bool:
+    return (exchange or "").strip().upper() in _OTC_EXCHANGES
+
 
 def is_common_stock(symbol: str, name: str) -> bool:
     """Filter Alpaca's asset list down to things worth ranking."""
@@ -82,6 +90,9 @@ class MarketSweep:
         self.cycle = 0
         self.scanned = 0
         self.skipped = 0
+        # Symbols the feed publishes nothing for. Remembered so the sweep stops
+        # rediscovering the same dead tickers on every pass.
+        self.no_data: set = set()
         self.last_chunk: float | None = None
         self.started: float | None = None
         self.last_error: str | None = None
@@ -90,6 +101,13 @@ class MarketSweep:
     # ── universe ────────────────────────────────────────────────────────────
     def build_universe(self) -> list[str]:
         """Every tradable common stock the connected account can reach.
+
+        Two exclusions beyond the name filter, both of which the sweep learned
+        the hard way. OTC listings are marked tradable by Alpaca in their
+        thousands but carry no published bars, so every one of them was a
+        guaranteed failed fetch, retried on every pass forever. And symbols
+        already found to have no data are remembered, because the second
+        discovery is as worthless as the first.
 
         Falls back to the curated groups when there is no connection, so the
         sweep still does something useful offline instead of nothing.
@@ -100,7 +118,11 @@ class MarketSweep:
         if not syms:
             return list(SCAN_ALL)
         names = getattr(self.state, "_alpaca_names", {}) or {}
-        out = [s for s in sorted(syms) if is_common_stock(s, names.get(s, ""))]
+        exch = getattr(self.state, "_alpaca_exchange", {}) or {}
+        out = [s for s in sorted(syms)
+               if is_common_stock(s, names.get(s, ""))
+               and not is_otc(exch.get(s, ""))
+               and s not in self.no_data]
         return out or list(SCAN_ALL)
 
     # ── deference ───────────────────────────────────────────────────────────
@@ -168,10 +190,17 @@ class MarketSweep:
         self.yield_to_user()
         self.state.prefetch_ohlc(batch)
 
+        # Anything the fetch returned nothing for has no published data. Note it
+        # once so future passes skip it instead of failing on it again.
+        for sym in batch:
+            if sym not in self.state._ohlc_cache:
+                self.no_data.add(sym)
+
         # Drop the untradable before paying to score them. This is the cheapest
         # possible filter and it runs on data already in hand.
         worth = [s for s in batch
-                 if self.tradable_enough((self.state._ohlc_cache.get(s) or (0, None, ""))[1])]
+                 if s not in self.no_data
+                 and self.tradable_enough((self.state._ohlc_cache.get(s) or (0, None, ""))[1])]
         self.skipped += len(batch) - len(worth)
 
         # Score in small slices, standing aside between each. Scoring the whole
@@ -341,6 +370,7 @@ class MarketSweep:
             "cycle": self.cycle,
             "scanned": self.scanned,
             "skipped": self.skipped,
+            "noData": len(self.no_data),
             "boardSize": len(self.board),
             "lastChunk": self.last_chunk,
             "started": self.started,

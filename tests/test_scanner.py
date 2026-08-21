@@ -123,3 +123,14 @@ def test_scan_cache_makes_repeat_scans_instant():
     t0 = _t.time()
     client.get("/api/scan", params={"universe": "megacap", "top": 5, "fresh": 3})
     assert _t.time() - t0 < 0.5, "filter change must reuse the cached scores"
+
+
+def test_a_symbol_with_no_bars_says_so_plainly():
+    """It used to surface as KeyError('open'), which named the symptom and hid
+    the news: the feed publishes nothing for this symbol."""
+    import pandas as pd
+    import pytest
+    from markov_hedge_fund_method.market_data import _ohlc_columns
+
+    with pytest.raises(ValueError, match="no price bars"):
+        _ohlc_columns(pd.DataFrame({"irrelevant": [1, 2]}))
