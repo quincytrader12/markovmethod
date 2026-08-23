@@ -108,7 +108,13 @@ def test_the_renderer_and_the_handlers_share_one_geometry():
     """Two copies of the padding would put the cursor anchor off by a few bars."""
     assert re.search(r"const PAD = \{l:\d+,r:\d+,t:\d+,b:\d+\}", SOURCE)
     assert "const pad = PAD;" in SOURCE, "drawChart kept its own padding"
-    assert len(re.findall(r"\{l:46,r:12,t:12,b:34\}", SOURCE)) == 1
+    # One declaration, and the main chart's geometry never written as a literal
+    # anywhere else. Pinning the actual values would only fail whenever the
+    # layout legitimately changes; what matters is that a second copy of *this*
+    # padding never appears for the handlers to drift against.
+    assert len(re.findall(r"const PAD = ", SOURCE)) == 1
+    pad = re.search(r"const PAD = (\{l:\d+,r:\d+,t:\d+,b:\d+\})", SOURCE).group(1)
+    assert SOURCE.count(pad) == 1, "the chart padding is written out twice"
 
 
 def test_the_reset_control_exists_and_is_reachable():

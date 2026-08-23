@@ -556,6 +556,9 @@
     border-radius:3px; padding:3px 8px; font-family:inherit; font-size:10px; letter-spacing:1px; text-transform:uppercase}
   .mini-btn:hover{border-color:var(--cyan)}
   .mini-btn.danger{color:var(--red)}
+  .levels-row{display:flex; align-items:center; gap:9px; margin-top:7px; flex-wrap:wrap; font-size:10px}
+  .levels-row .muted{font-size:10px; letter-spacing:.5px}
+  .levels-row b{color:var(--cyan2); font-family:var(--mono)}
 
   /* long-run + timeline */
   .lr{display:flex; align-items:center; gap:10px}
@@ -680,6 +683,8 @@
           <span class="sym" id="c-sym">SPY</span>
           <span class="price" id="c-price">—</span>
           <span class="tfbar" id="tfbar">
+            <button data-tf="15M" title="intraday · 15-minute candles">15M</button>
+            <button data-tf="30M" title="intraday · 30-minute candles">30M</button>
             <button data-tf="1H" title="intraday · 1-hour candles">1H</button>
             <button data-tf="4H" title="intraday · 4-hour candles">4H</button>
             <button data-tf="1D" title="intraday · 5-min candles">1D</button>
@@ -780,6 +785,11 @@
           <label class="fld" data-need="legs">Take-profit<input id="o-tp" type="number" step="any"></label>
           <label class="fld" data-need="legs">Stop-loss<input id="o-slstop" type="number" step="any"></label>
         </div>
+        <div class="levels-row">
+          <button class="mini-btn" onclick="useLevels()"
+            title="Build a bracket from the session's own structure — entry at the value-area edge, stop beyond the opening range, target at the far edge of value">⚡ USE LEVELS</button>
+          <span id="levels-note" class="muted"></span>
+        </div>
         <div class="afford" id="afford"><span class="muted">price —</span></div>
         <div class="metasize" id="metasize"></div>
         <div class="row">
@@ -808,12 +818,19 @@
 </div>
 
 <script>
-const C = { bull:'#2fe08a', bear:'#ff4d5e', sideways:'#9198a0', cyan:'#4da3ff', dim:'#6d727a', grid:'#292a2c', ink:'#e8eaed', amber:'#f5c451' };
+const C = { bull:'#2fe08a', bear:'#ff4d5e', sideways:'#9198a0', cyan:'#4da3ff', dim:'#6d727a', grid:'#292a2c', ink:'#e8eaed', amber:'#f5c451',
+  // Brighter and more saturated than the amber MA20 it shares a chart with,
+  // and always horizontal with a filled tag, so the two never read alike.
+  price:'#ffc51f',
+  // Neon grey for the entry — bright enough to find at a glance, colourless
+  // enough that it never looks like a bullish or bearish statement.
+  entry:'#c6ccd4' };
 let SYMBOL = 'SPY';
 let SIDE = 'buy';
 let CFG = {};
 let TF = 126;                 // number = daily-range days; "1D"/"1W" = intraday
 let INTRADAY = null;          // intraday candles payload when TF is "1D"/"1W"
+var POSITION = null;          // hoisted: drawChart may run before the first portfolio poll
 let LAST = null;              // full payload for the current symbol
 let BP = null;                // buying power ($) when an account is connected
 const STATE_CACHE = {};       // symbol -> payload (instant re-select)
@@ -1028,8 +1045,12 @@ let VIEW = null;                    // null = "whatever the timeframe implies"
 
 function sliceRange(ch, a, b){
   const s = arr => (arr||[]).slice(a,b);
+  const all = ch.bars || [];
   return { bars:s(ch.bars), ma20:s(ch.ma20), ma50:s(ch.ma50), rsi:s(ch.rsi),
-           momentum:s(ch.momentum), vwap: ch.vwap ? s(ch.vwap) : null };
+           momentum:s(ch.momentum), vwap: ch.vwap ? s(ch.vwap) : null,
+           // The latest price of the whole series, not of the visible slice —
+           // panning back through history must not relabel an old bar "now".
+           lastPrice: all.length ? all[all.length-1].c : null };
 }
 function chartSource(){
   if(typeof TF === 'string'){
@@ -1417,7 +1438,7 @@ function chartCtx(id){
 /* One geometry for the plot area. The zoom handlers convert a pixel position
    into a bar index, so they have to use exactly the padding the renderer used —
    two copies of these numbers would put the cursor anchor off by a few bars. */
-const PAD = {l:46,r:12,t:12,b:34};
+const PAD = {l:46,r:56,t:12,b:34};   // r leaves room for the price tags
 
 function drawChart(chart){
   const {ctx,w,h} = chartCtx('chart');
@@ -1428,6 +1449,16 @@ function drawChart(chart){
   const mas = chart.ma20.filter(v=>v!=null).concat(chart.ma50.filter(v=>v!=null))
     .concat((chart.vwap||[]).filter(v=>v!=null));
   let hi = Math.max(...highs, ...mas), lo = Math.min(...lows, ...mas);
+  // The current price must always be on screen — a "where price is now" line
+  // pinned to the edge of the scale is pointing at nothing.
+  if(chart.lastPrice!=null){ hi=Math.max(hi,chart.lastPrice); lo=Math.min(lo,chart.lastPrice); }
+  // Entry only stretches the scale when it is near enough that doing so costs
+  // little. An entry far outside the window would flatten every candle into a
+  // band, so past that distance it is clamped to the edge and marked instead.
+  const entry = (POSITION && POSITION.avgEntry) ? Number(POSITION.avgEntry) : null;
+  const room = ((hi-lo)||1) * 0.35;
+  const entryInScale = entry!=null && entry <= hi+room && entry >= lo-room;
+  if(entryInScale){ hi=Math.max(hi,entry); lo=Math.min(lo,entry); }
   const span=(hi-lo)||1; lo-=span*.04; hi+=span*.04;
   const X = i => pad.l + (w-pad.l-pad.r) * (i/((bars.length-1)||1));
   const Y = v => pad.t + (h-pad.t-pad.b) * (1-(v-lo)/(hi-lo));
@@ -1465,6 +1496,46 @@ function drawChart(chart){
     line(ctx, chart.vwap, X, Y, C.cyan, 1.4);
     ctx.restore();
   }
+
+  // Entry first, so the current price sits above it where they nearly coincide
+  // — which is exactly when you are watching, and the live number is the one
+  // you need to read.
+  if(entry!=null){
+    const clamped = !entryInScale;
+    const y = clamped ? (entry > hi ? Y(hi) : Y(lo)) : Y(entry);
+    priceMark(ctx, w, y, entry, C.entry, {dash:[7,5], clamped,
+      arrow: clamped ? (entry > hi ? '▲' : '▼') : ''});
+  }
+  if(chart.lastPrice!=null){
+    priceMark(ctx, w, Y(chart.lastPrice), chart.lastPrice, C.price, {glow:true});
+  }
+}
+
+/* A horizontal marker with its value in a tag on the right edge. The tag is the
+   point: a line across a chart is a level, but a level you have to read off the
+   axis by eye is one you will misread. */
+function priceMark(ctx, w, y, value, colour, opt){
+  opt = opt || {};
+  const pad = PAD;
+  ctx.save();
+  ctx.strokeStyle = colour; ctx.lineWidth = 1.2;
+  if(opt.dash) ctx.setLineDash(opt.dash);
+  if(opt.glow){ ctx.shadowColor = colour; ctx.shadowBlur = 7; }
+  ctx.globalAlpha = opt.clamped ? 0.55 : 1;
+  ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w-pad.r, y); ctx.stroke();
+  ctx.restore();
+
+  const text = (opt.arrow ? opt.arrow+' ' : '') + fmt(value, 2);
+  ctx.save();
+  ctx.font = '10px monospace'; ctx.textBaseline = 'middle';
+  const tw = Math.max(ctx.measureText(text).width + 8, pad.r - 4);
+  const tx = w - pad.r + 2, ty = Math.max(7, Math.min(y, ctx.canvas.height));
+  ctx.fillStyle = colour;
+  ctx.globalAlpha = opt.clamped ? 0.55 : 1;
+  ctx.fillRect(tx, ty-7, tw, 14);
+  ctx.fillStyle = '#141415';                 // the page ground, for contrast
+  ctx.fillText(text, tx+4, ty+0.5);
+  ctx.restore();
 }
 function line(ctx, arr, X, Y, color, lw){
   ctx.strokeStyle=color; ctx.lineWidth=lw; ctx.beginPath(); let started=false;
@@ -1635,8 +1706,17 @@ async function cancelAll(){
 }
 
 /* ---------- portfolio ---------- */
+/* The open position in the symbol on screen, so the chart can mark where you
+   got in. Held here rather than read from the DOM because the chart redraws far
+   more often than the portfolio panel does. */
 async function loadPortfolio(){
   let pf; try{ pf=await api('/api/portfolio?symbol='+encodeURIComponent(SYMBOL)); }catch(e){ return; }
+  const before = POSITION && POSITION.avgEntry;
+  POSITION = pf.position || null;
+  // Only redraw when the entry actually moved — the portfolio polls every
+  // fifteen seconds and repainting the chart on each tick would undo the
+  // zoom-and-pan work for no gain.
+  if((POSITION && POSITION.avgEntry) !== before) renderChart();
   const el=$('portfolio');
   BP = (pf.connected && pf.account) ? pf.account.buyingPower : null; renderAfford();
   if(!pf.connected){ el.innerHTML='<div class="muted">no account connected — add one under Accounts</div>'; $('pf-tag').textContent='offline'; return; }
@@ -1785,6 +1865,45 @@ function tpoControls(){
     '<select onchange="setTpoPeriod(this.value)" title="Minutes per letter. Thirty is standard; '+
       'shorter periods give a finer profile on a quiet session.">'+per+'</select>'+
     '</div>';
+}
+
+/* ---------- levels to ticket ----------
+   The order panel already speaks every Alpaca order type; what it could not do
+   was fill in a price. These come from levels the terminal computes anyway —
+   the value area for entry and target, the opening range for the stop, ATR for
+   the buffer — so a bracket reflects what the session actually did instead of
+   round numbers. Filled in, never submitted: it sets the fields and stops. */
+async function useLevels(){
+  const note = $('levels-note'); if(!note) return;
+  const side = SIDE || 'buy';        // the BUY/SELL toggle in the panel
+  note.textContent = 'reading the session…';
+  let d;
+  try{
+    d = await api('/api/ticket-levels?symbol='+encodeURIComponent(SYMBOL)+
+                  '&side='+encodeURIComponent(side));
+  }catch(e){ note.textContent = 'levels unavailable: '+e.message; return; }
+
+  if(d.limit==null){
+    note.innerHTML = '<span style="color:var(--amber)">'+
+      esc((d.why && d.why.error) || 'no levels available')+'</span>';
+    return;
+  }
+  // A bracket is the point — an entry with no exits attached is the half of
+  // this that gets forgotten once the position is on.
+  $('o-type').value = 'limit';
+  $('o-class').value = 'bracket';
+  syncOrderFields();
+  $('o-limit').value = d.limit;
+  $('o-tp').value = d.target;
+  $('o-slstop').value = d.stop;
+  if(d.suggestedQty) $('o-qty').value = d.suggestedQty;
+
+  const rr = d.rr==null ? '—' : d.rr.toFixed(2)+':1';
+  const qty = d.suggestedQty ? ' · <b>'+d.suggestedQty+'</b> sh at '+
+              ((d.riskPct||0.01)*100).toFixed(0)+'% risk' : '';
+  note.innerHTML = 'entry <b>'+fmt(d.limit,2)+'</b> · stop <b>'+fmt(d.stop,2)+
+    '</b> · target <b>'+fmt(d.target,2)+'</b> · R:R <b>'+rr+'</b>'+qty;
+  log('levels applied — '+d.why.limit+'; stop '+d.why.stop+'; target '+d.why.target, 'dim');
 }
 
 /* ---------- day-trade counter ----------
@@ -2115,12 +2234,52 @@ function addAllTopPicks(){
 }
 
 /* ---------- trading blotter ---------- */
-function openBlotter(){ $('blot-modal').classList.add('open'); loadBlotter(); }
-function closeBlotter(){ $('blot-modal').classList.remove('open'); }
+/* A resting order is only readable next to the price it is waiting for. Without
+   these columns the table said an order existed but nothing about whether it was
+   about to fill or had been stranded an hour ago. */
+function orderPx(o){
+  const px = o.limitPrice!=null ? o.limitPrice : o.stopPrice;
+  return px==null ? '<span style="color:var(--dim)">market</span>' : '$'+fmt(px);
+}
+function markPx(marks, sym){
+  const m = marks && marks[(sym||'').toUpperCase()];
+  return m==null ? '<span style="color:var(--dim)">—</span>' : '$'+fmt(m);
+}
+function awayPx(marks, o){
+  const px = o.limitPrice!=null ? o.limitPrice : o.stopPrice;
+  const m = marks && marks[(o.symbol||'').toUpperCase()];
+  if(px==null || m==null || !m) return '<span style="color:var(--dim)">—</span>';
+  const pct = (px - m) / m * 100;
+  // Green when the market has to come to you, amber when it has already gone
+  // past — that is the difference between waiting and having missed it.
+  const buy = (o.side||'').toLowerCase().endsWith('buy');
+  const favourable = buy ? pct <= 0 : pct >= 0;
+  return '<span style="color:'+(favourable?'var(--green)':'var(--amber)')+'">'+
+         (pct>=0?'+':'')+pct.toFixed(2)+'%</span>';
+}
+
+let BLOT_TIMER = null;
+function openBlotter(){
+  $('blot-modal').classList.add('open'); loadBlotter();
+  // Prices in a table nobody refreshes are a snapshot of the moment it opened.
+  // Polling only while it is on screen keeps that honest without costing
+  // anything the rest of the time.
+  clearInterval(BLOT_TIMER);
+  BLOT_TIMER = setInterval(()=>{
+    if($('blot-modal').classList.contains('open')) loadBlotter();
+    else { clearInterval(BLOT_TIMER); BLOT_TIMER=null; }
+  }, 10000);
+}
+function closeBlotter(){
+  $('blot-modal').classList.remove('open');
+  clearInterval(BLOT_TIMER); BLOT_TIMER=null;
+}
 function plClass(v){ return v>=0?'pl-pos':'pl-neg'; }
 async function loadBlotter(){
   const acct=$('blot-acct'), body=$('blot-body');
-  acct.innerHTML=''; body.innerHTML='<div class="blot-empty">loading…</div>';
+  // Only announce the wait on the first load. On the ten-second refresh this
+  // would blank a table the user is reading, once every ten seconds.
+  if(!body.innerHTML.trim()){ body.innerHTML='<div class="blot-empty">loading…</div>'; }
   let d;
   try{ d=await api('/api/blotter'); }
   catch(e){ body.innerHTML='<div class="blot-empty">failed: '+esc(e.message)+'</div>'; return; }
@@ -2164,12 +2323,17 @@ async function loadBlotter(){
   if(!d.openOrders.length){ html+='<div class="blot-empty">no open orders</div>'; }
   else{
     html+='<table class="blot"><thead><tr><th>Symbol</th><th>Side</th><th>Type</th>'+
-      '<th class="num">Qty</th><th>Status</th><th></th></tr></thead><tbody>';
+      '<th class="num">Qty</th><th class="num">Order px</th><th class="num">Price</th>'+
+      '<th class="num">Away</th><th>Status</th><th></th></tr></thead><tbody>';
     for(const o of d.openOrders){
       const sd=(o.side||'').toLowerCase()==='sell'?'side-short':'side-long';
       html+='<tr><td><b>'+esc(o.symbol)+'</b></td>'+
         '<td class="'+sd+'">'+esc((o.side||'').toUpperCase())+'</td>'+
-        '<td>'+esc(o.type)+'</td><td class="num">'+esc(o.qty)+'</td><td>'+esc(o.status)+'</td>'+
+        '<td>'+esc(o.type)+'</td><td class="num">'+esc(o.qty)+'</td>'+
+        '<td class="num">'+orderPx(o)+'</td>'+
+        '<td class="num">'+markPx(d.marks, o.symbol)+'</td>'+
+        '<td class="num">'+awayPx(d.marks, o)+'</td>'+
+        '<td>'+esc(o.status)+'</td>'+
         '<td class="num">'+(ro?'':'<button class="tiny-btn amber" onclick="cancelOrd(\''+esc(o.id)+'\')">CANCEL</button>')+'</td></tr>';
     }
     html+='</tbody></table>';

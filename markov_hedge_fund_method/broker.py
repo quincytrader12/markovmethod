@@ -47,6 +47,14 @@ class Position:
     unrealized_plpc: float = 0.0  # fraction, e.g. 0.042 = +4.2%
 
 
+def _f(v) -> float | None:
+    """A price field that may be absent, None, or a string, as one of float or None."""
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class OpenOrder:
     id: str
@@ -55,6 +63,13 @@ class OpenOrder:
     type: str
     qty: str
     status: str
+    # An order resting in the book without its price on screen cannot be judged.
+    # How far a limit sits from the market is the whole question of whether it
+    # is about to fill or was left behind an hour ago.
+    limit_price: float | None = None
+    stop_price: float | None = None
+    filled_qty: str = "0"
+    current_price: float | None = None
 
 
 @dataclass
@@ -278,6 +293,9 @@ class AlpacaBroker:
                 type=str(getattr(o.type, "value", o.type)),
                 qty=str(o.qty if o.qty is not None else f"${o.notional}"),
                 status=str(getattr(o.status, "value", o.status)),
+                limit_price=_f(getattr(o, "limit_price", None)),
+                stop_price=_f(getattr(o, "stop_price", None)),
+                filled_qty=str(getattr(o, "filled_qty", 0) or 0),
             ))
         return out
 

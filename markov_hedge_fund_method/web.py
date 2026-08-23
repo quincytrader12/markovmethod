@@ -1037,6 +1037,19 @@ def create_app(state: AppState):
         state._meta_size_cache.clear()
         return {"ok": True, "enabled": state.meta_sizing_enabled()}
 
+    def _marks(state, positions, orders, cap: int = 12) -> dict:
+        """Current price per symbol, positions first because they carry it free."""
+        out = {p.symbol.upper(): p.current_price for p in positions if p.current_price}
+        missing = [o.symbol.upper() for o in orders if o.symbol.upper() not in out]
+        for sym in list(dict.fromkeys(missing))[:cap]:
+            try:
+                q = state.broker.latest_quote(sym)
+            except Exception:  # noqa: BLE001 — a missing mark is a dash, not a failure
+                q = None
+            if q and q.get("mid"):
+                out[sym] = q["mid"]
+        return out
+
     @app.get("/api/daytrades")
     def daytrades_endpoint():
         """The standing day-trade counter for the header."""
@@ -1086,6 +1099,37 @@ def create_app(state: AppState):
             # does not exist. The levels still render; the verdict does not.
             out["verdict"] = "no data"
             out["reason"] = "Placeholder bars — no timing read on data this is not."
+        return out
+
+    @app.get("/api/ticket-levels")
+    def ticket_levels_endpoint(symbol: str = "SPY", side: str = "buy",
+                               tf: str = "1D", riskPct: float = 0.01):
+        """Limit, stop and target drawn from the session's own structure.
+
+        Suggestions for the order panel, which already speaks every Alpaca order
+        type but had no way to fill in a price. Never submitted automatically.
+        """
+        from . import intraday
+        from .tpo import build_profile
+
+        symbol = symbol.strip().upper() or "SPY"
+        df, source = state.intraday_for(symbol, (tf or "1D").upper())
+        real = not str(source).startswith("synthetic")
+        out = intraday.ticket_levels(df, profile=build_profile(df), side=side)
+        out.update({"symbol": symbol, "dataSource": source, "real": real})
+        if not real:
+            out["why"] = {"error": "placeholder bars — no levels to suggest"}
+            out["limit"] = out["stop"] = out["target"] = None
+            return out
+        try:
+            if state.broker is not None:
+                eq = state.broker.get_account().equity
+                out["equity"] = eq
+                out["riskPct"] = max(0.0, min(float(riskPct), 0.05))
+                out["suggestedQty"] = intraday.shares_for_risk(
+                    eq, out["riskPct"], out["riskPerShare"])
+        except Exception:  # noqa: BLE001 — sizing is a bonus, not a precondition
+            pass
         return out
 
     @app.get("/api/tpo")
@@ -1557,7 +1601,8 @@ def create_app(state: AppState):
                 "marketValue": pos.market_value, "unrealizedPl": pos.unrealized_pl},
             "openOrders": [
                 {"id": o.id, "symbol": o.symbol, "side": o.side, "type": o.type,
-                 "qty": o.qty, "status": o.status}
+                 "qty": o.qty, "status": o.status, "limitPrice": o.limit_price,
+                 "stopPrice": o.stop_price, "filledQty": o.filled_qty}
                 for o in orders
             ],
         }
@@ -1591,9 +1636,16 @@ def create_app(state: AppState):
             ],
             "openOrders": [
                 {"id": o.id, "symbol": o.symbol, "side": o.side, "type": o.type,
-                 "qty": o.qty, "status": o.status}
+                 "qty": o.qty, "status": o.status, "limitPrice": o.limit_price,
+                 "stopPrice": o.stop_price, "filledQty": o.filled_qty}
                 for o in orders
             ],
+            # The live mark for every symbol on either table. A resting limit is
+            # only readable next to the price it is waiting for, and an order can
+            # be for a symbol you hold nothing of, so positions alone do not cover
+            # it. Blotter only — the portfolio poll runs every fifteen seconds on
+            # the main page and must not start fetching quotes.
+            "marks": _marks(state, positions, orders),
         }
 
     @app.post("/api/positions/close")

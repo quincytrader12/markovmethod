@@ -201,6 +201,10 @@ def get_ohlc(settings) -> pd.DataFrame:
 # Intraday timeframes: bar count + pandas frequency for the synthetic series,
 # yfinance (period, interval), and the Alpaca (minutes, lookback-days) pair.
 _INTRADAY_TF = {
+    # Yahoo caps 15-minute and finer history at 60 days, so the lookbacks below
+    # stay inside that rather than asking for a window it will silently truncate.
+    "15M": {"n": 130, "freq": "15min", "yf": ("5d", "15m"), "alpaca": (15, 7)},
+    "30M": {"n": 130, "freq": "30min", "yf": ("1mo", "30m"), "alpaca": (30, 14)},
     "1H": {"n": 120, "freq": "1h", "yf": ("1mo", "1h"), "alpaca": (60, 30)},
     "4H": {"n": 120, "freq": "4h", "yf": ("3mo", "1h"), "alpaca": (240, 120)},
     "1D": {"n": 78, "freq": "5min", "yf": ("1d", "5m"), "alpaca": (5, 4)},

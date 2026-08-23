@@ -349,3 +349,143 @@ def test_the_error_names_every_feed_it_tried():
         assert "Alpaca" in str(e.value) and "Yahoo" in str(e.value)
     finally:
         md._alpaca_intraday, md._yfinance_intraday = saved
+
+
+# ── levels to a ticket ──────────────────────────────────────────────────────
+def test_a_buy_enters_at_the_low_edge_of_value():
+    lv = intraday.ticket_levels(SESSION, profile=PROFILE, side="buy")
+    assert lv["limit"] == pytest.approx(min(PROFILE["val"],
+                                            float(SESSION["Close"].iloc[-1])), abs=0.01)
+    assert lv["target"] == pytest.approx(PROFILE["vah"], abs=0.01)
+
+
+def test_a_buy_stop_sits_under_the_opening_range_not_on_it():
+    """A stop exactly on the level everyone can see is the one taken out by the
+    poke through it."""
+    lv = intraday.ticket_levels(SESSION, profile=PROFILE, side="buy")
+    assert lv["stop"] < intraday.opening_range(SESSION)["low"]
+
+
+def test_a_sell_mirrors_the_whole_structure():
+    lv = intraday.ticket_levels(SESSION, profile=PROFILE, side="sell")
+    assert lv["stop"] > intraday.opening_range(SESSION)["high"]
+    assert lv["target"] == pytest.approx(PROFILE["val"], abs=0.01)
+
+
+def test_a_buy_never_bids_above_the_market():
+    """Suggesting an entry above where price already is turns a patient limit
+    into a market order that pays the spread."""
+    lv = intraday.ticket_levels(SESSION, profile=PROFILE, side="buy")
+    assert lv["limit"] <= float(SESSION["Close"].iloc[-1]) + 1e-9
+
+
+def test_the_reward_to_risk_is_computed():
+    lv = intraday.ticket_levels(SESSION, profile=PROFILE, side="buy")
+    assert lv["rr"] == pytest.approx(lv["rewardPerShare"] / lv["riskPerShare"], abs=0.01)
+
+
+def test_every_level_says_where_it_came_from():
+    """A price the user cannot trace is a price they cannot argue with."""
+    lv = intraday.ticket_levels(SESSION, profile=PROFILE, side="buy")
+    assert set(lv["why"]) == {"limit", "stop", "target"}
+    assert "value-area" in lv["why"]["limit"]
+
+
+def test_levels_survive_a_missing_profile():
+    lv = intraday.ticket_levels(SESSION, profile=None, side="buy")
+    assert lv["limit"] is not None and lv["stop"] is not None
+    assert "no profile" in lv["why"]["limit"]
+
+
+def test_no_bars_gives_no_levels():
+    import pandas as _pd
+    lv = intraday.ticket_levels(_pd.DataFrame(), side="buy")
+    assert lv["limit"] is None and "error" in lv["why"]
+
+
+# ── sizing off risk, not cash ───────────────────────────────────────────────
+def test_size_comes_from_the_distance_to_the_stop():
+    """Sizing off buying power makes every trade the same bet regardless of how
+    far the stop is, which stops a win rate meaning anything."""
+    assert intraday.shares_for_risk(12_000, 0.01, 2.80) == 42
+    assert intraday.shares_for_risk(12_000, 0.01, 5.60) == 21
+
+
+def test_a_wider_stop_buys_fewer_shares():
+    tight = intraday.shares_for_risk(50_000, 0.01, 1.0)
+    wide = intraday.shares_for_risk(50_000, 0.01, 10.0)
+    assert tight == wide * 10
+
+
+def test_sizing_refuses_the_impossible():
+    assert intraday.shares_for_risk(0, 0.01, 2.0) is None
+    assert intraday.shares_for_risk(10_000, 0.01, 0) is None
+
+
+# ── the levels endpoint ─────────────────────────────────────────────────────
+def test_the_levels_endpoint_refuses_placeholder_bars():
+    """Typing invented levels into a live order ticket is worse than none."""
+    d = _client().get("/api/ticket-levels", params={"symbol": "SPY"}).json()
+    assert d["real"] is False
+    assert d["limit"] is None and d["stop"] is None and d["target"] is None
+    assert "error" in d["why"]
+
+
+def test_the_page_offers_the_levels_button():
+    html = _client().get("/").text
+    assert "function useLevels" in html and "USE LEVELS" in html
+
+
+def test_applying_levels_builds_a_bracket():
+    """An entry with no exits attached is the half that gets forgotten once the
+    position is on."""
+    body = _client().get("/").text.split("async function useLevels")[1][:1800]
+    assert "'bracket'" in body and "o-slstop" in body and "o-tp" in body
+
+
+def test_the_button_fills_the_ticket_but_never_sends_it():
+    body = _client().get("/").text.split("async function useLevels")[1][:1800]
+    assert "submitOrder" not in body
+
+
+# ── timeframes ──────────────────────────────────────────────────────────────
+def test_the_fifteen_and_thirty_minute_timeframes_exist():
+    from markov_hedge_fund_method.market_data import _INTRADAY_TF
+    assert "15M" in _INTRADAY_TF and "30M" in _INTRADAY_TF
+
+
+def test_every_intraday_timeframe_renders_offline():
+    from markov_hedge_fund_method.market_data import _INTRADAY_TF, synthetic_intraday
+    for tf in _INTRADAY_TF:
+        df = synthetic_intraday(tf)
+        assert not df.empty and "Volume" in df.columns, tf
+
+
+def test_a_finer_timeframe_covers_less_ground():
+    """Same bar count, shorter window — otherwise the label means nothing."""
+    from markov_hedge_fund_method.market_data import synthetic_intraday
+    span = lambda tf: (lambda d: d.index[-1] - d.index[0])(synthetic_intraday(tf))
+    assert span("15M") < span("30M") < span("1H") < span("4H")
+
+
+def test_the_finer_timeframes_stay_inside_yahoos_history_limit():
+    """Yahoo caps 15-minute and finer at 60 days and silently truncates past it,
+    which would leave the chart quietly shorter than it claims."""
+    from markov_hedge_fund_method.market_data import _INTRADAY_TF
+    limits = {"1d": 1, "5d": 5, "1mo": 30, "3mo": 90}
+    for tf in ("15M", "30M"):
+        period, interval = _INTRADAY_TF[tf]["yf"]
+        assert limits[period] <= 60, f"{tf} asks for {period} of {interval} bars"
+
+
+def test_the_page_offers_the_new_timeframes():
+    html = _client().get("/").text
+    assert 'data-tf="15M"' in html and 'data-tf="30M"' in html
+
+
+def test_the_new_timeframes_serve_candles():
+    c = _client()
+    for tf in ("15M", "30M"):
+        d = c.get("/api/candles", params={"symbol": "SPY", "tf": tf}).json()
+        assert d["bars"] and d["tf"] == tf
+        assert d["vwap"], f"{tf} lost its VWAP"

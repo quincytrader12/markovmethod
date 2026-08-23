@@ -297,3 +297,97 @@ def _reason(px: float, vw: float, profile: dict | None,
         return "not enough intraday detail to judge the fill"
     verb = "Selling" if side == "sell" else "Buying"
     return f"{verb} here is " + ", ".join(bits) + "."
+
+
+# ── from levels to a ticket ─────────────────────────────────────────────────
+# How far below the structure a stop sits, in ATRs. A stop exactly on the level
+# everyone can see is the one that gets taken out on the poke through it.
+STOP_BUFFER_ATR = 0.5
+
+
+def ticket_levels(df: pd.DataFrame, *, profile: dict | None = None,
+                  side: str = "buy", price: float | None = None) -> dict:
+    """Suggest limit, stop and target from the session's own structure.
+
+    The order panel already speaks every Alpaca order type; what it could not do
+    was fill in a price. These come from levels the terminal is computing
+    anyway — the value area for entry and target, the opening range for the
+    stop, the ATR for the buffer — so a bracket can be built from what the
+    session actually did rather than from round numbers.
+
+    Suggestions, not instructions. Every one is returned with the level it came
+    from so it can be argued with.
+    """
+    side = "sell" if str(side).lower() in ("sell", "short") else "buy"
+    out = {"side": side, "limit": None, "stop": None, "target": None,
+           "atr": None, "why": {}, "riskPerShare": None,
+           "rewardPerShare": None, "rr": None}
+    if df is None or df.empty:
+        out["why"]["error"] = "no intraday bars"
+        return out
+
+    px = float(price if price else df["Close"].iloc[-1])
+    a = atr(df)
+    rng = opening_range(df)
+    prof = profile or {}
+    val, vah = prof.get("val"), prof.get("vah")
+    out["atr"] = None if a is None else round(a, 4)
+    buffer = (a or px * 0.005) * STOP_BUFFER_ATR
+
+    if side == "buy":
+        # Enter at the low edge of value — the dip inside a session the daily
+        # chain already likes — but never above where price already is.
+        limit = min(val, px) if val is not None else px
+        stop = (rng["low"] if rng else limit) - buffer
+        target = vah if vah is not None else limit + 2.0 * (limit - stop)
+        out["why"] = {
+            "limit": ("value-area low — where the session's own buyers were"
+                      if val is not None else "last price — no profile to work from"),
+            "stop": (f"{STOP_BUFFER_ATR}×ATR under the opening-range low"
+                     if rng else f"{STOP_BUFFER_ATR}×ATR under the entry"),
+            "target": ("value-area high" if vah is not None
+                       else "twice the risk — no profile to work from"),
+        }
+    else:
+        limit = max(vah, px) if vah is not None else px
+        stop = (rng["high"] if rng else limit) + buffer
+        target = val if val is not None else limit - 2.0 * (stop - limit)
+        out["why"] = {
+            "limit": ("value-area high" if vah is not None
+                      else "last price — no profile to work from"),
+            "stop": (f"{STOP_BUFFER_ATR}×ATR over the opening-range high"
+                     if rng else f"{STOP_BUFFER_ATR}×ATR over the entry"),
+            "target": ("value-area low" if val is not None
+                       else "twice the risk — no profile to work from"),
+        }
+
+    # Round the prices first, then derive risk and reward from the rounded ones.
+    # Computing the ratio from full precision leaves a screen whose own numbers
+    # do not reproduce it, and a user who checks the arithmetic and finds it
+    # wrong has no way to know which figure to trust.
+    limit, stop, target = (round(float(v), 2) for v in (limit, stop, target))
+    risk = round(abs(limit - stop), 2)
+    reward = round(abs(target - limit), 2)
+    out.update({
+        "limit": limit, "stop": stop, "target": target,
+        "riskPerShare": risk,
+        "rewardPerShare": reward,
+        # The number that decides whether the trade is worth taking at all, and
+        # the one most easily skipped when the prices are typed by hand.
+        "rr": round(reward / risk, 2) if risk > 0 else None,
+    })
+    return out
+
+
+def shares_for_risk(equity: float, risk_pct: float, risk_per_share: float) -> int | None:
+    """Position size from the risk you are willing to take, not from cash on hand.
+
+    Sizing off buying power makes every trade the same bet regardless of how far
+    away its stop is. Sizing off the distance to the stop makes every trade risk
+    the same amount, which is the only version that lets a win rate mean
+    anything across trades.
+    """
+    if not equity or not risk_per_share or risk_per_share <= 0:
+        return None
+    budget = float(equity) * max(0.0, float(risk_pct))
+    return max(0, int(budget // float(risk_per_share)))
