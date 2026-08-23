@@ -54,6 +54,13 @@ def _ohlc_columns(df: pd.DataFrame) -> pd.DataFrame:
         "Open": df[cols["open"]], "High": df[cols["high"]],
         "Low": df[cols["low"]], "Close": df[cols["close"]],
     }).dropna()
+    # Volume rides along when the feed publishes it. It is optional on purpose:
+    # a VWAP needs it, but every price path in the terminal predates it and must
+    # keep working without it. Absent is a fact to report, not a failure.
+    if "volume" in cols:
+        vol = pd.to_numeric(df[cols["volume"]], errors="coerce").reindex(out.index)
+        if vol.notna().any():
+            out["Volume"] = vol.fillna(0.0).astype(float)
     out.index = pd.to_datetime(out.index)
     if getattr(out.index, "tz", None) is not None:
         out.index = out.index.tz_localize(None)
@@ -219,7 +226,14 @@ def synthetic_intraday(tf: str = "1D", seed: int = 0) -> pd.DataFrame:
     amp = np.abs(rng.normal(0.0, 0.0028, n)) + 0.0008
     hi = np.maximum(o, c) * (1.0 + amp)
     lo = np.minimum(o, c) * (1.0 - amp)
-    return pd.DataFrame({"Open": o, "High": hi, "Low": lo, "Close": c}, index=idx)
+    # Intraday volume is U-shaped — heavy at the open and the close, thin over
+    # lunch. Flat synthetic volume would make the demo VWAP sit on the mid-price
+    # and hide the very behaviour a VWAP exists to show.
+    frac = np.linspace(0.0, 1.0, n) if n > 1 else np.zeros(1)
+    shape = 1.0 + 2.2 * (np.exp(-frac / 0.13) + np.exp(-(1.0 - frac) / 0.13))
+    vol = shape * rng.lognormal(mean=0.0, sigma=0.25, size=n) * 20_000.0
+    return pd.DataFrame({"Open": o, "High": hi, "Low": lo, "Close": c,
+                         "Volume": np.round(vol)}, index=idx)
 
 
 def _yfinance_intraday(ticker: str, tf: str) -> pd.DataFrame:

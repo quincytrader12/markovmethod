@@ -181,6 +181,7 @@ class AppState:
         self._regperf_cache: dict[str, tuple[float, dict]] = {}
         self._scan_cache: dict[str, tuple[float, list]] = {}
         self._ohlc_cache: dict[str, tuple[float, object, str]] = {}
+        self._intraday_cache: dict[tuple[str, str], tuple[float, object, str]] = {}
         self._state_vol_cache: dict[str, tuple[float, dict]] = {}
         self._state_meta_cache: dict[str, tuple[float, dict]] = {}
         self._heat_cache: dict[str, tuple[float, dict]] = {}
@@ -205,6 +206,7 @@ class AppState:
         self._scan_cache.clear()
         self._regperf_cache.clear()
         self._ohlc_cache.clear()
+        self._intraday_cache.clear()
         self._alpaca_symbols = None  # and a different asset universe
         self._alpaca_names = {}
         self._alpaca_exchange = {}
@@ -349,16 +351,32 @@ class AppState:
         df, source = self.ohlc_for(symbol)
         return df["Close"], source
 
+    # Intraday bars are shared by the candle chart, the profile and the timing
+    # read, and a user flipping between those three is asking the same question
+    # of the same bars. Without this every timeframe click, every TPO toggle and
+    # every change of the value-area setting was a fresh round trip for data the
+    # process had just been handed. Short enough to stay live, long enough that
+    # switching views costs nothing.
+    INTRADAY_TTL = 45.0
+
     def intraday_for(self, symbol: str, tf: str):
         """Intraday OHLC (1D/1W) for a symbol, always renderable."""
+        key = (symbol.upper(), (tf or "1D").upper())
+        hit = self._intraday_cache.get(key)
+        if hit and (time.monotonic() - hit[0]) < self.INTRADAY_TTL:
+            return hit[1], hit[2]
+
         if self.demo:
-            return synthetic_intraday(tf, seed=_seed(symbol)), "synthetic (demo)"
-        try:
-            return get_intraday_ohlc(replace(self.settings, ticker=symbol), tf), "live"
-        except Exception as exc:  # noqa: BLE001 — fall back so the chart never blanks
-            # Carry the reason: "failed to fetch" alone leaves nothing to act on.
-            return (synthetic_intraday(tf, seed=_seed(symbol)),
-                    f"synthetic (intraday unavailable — {exc})")
+            out = synthetic_intraday(tf, seed=_seed(symbol)), "synthetic (demo)"
+        else:
+            try:
+                out = get_intraday_ohlc(replace(self.settings, ticker=symbol), tf), "live"
+            except Exception as exc:  # noqa: BLE001 — fall back so the chart never blanks
+                # Carry the reason: "failed to fetch" alone leaves nothing to act on.
+                out = (synthetic_intraday(tf, seed=_seed(symbol)),
+                       f"synthetic (intraday unavailable — {exc})")
+        self._intraday_cache[key] = (time.monotonic(), out[0], out[1])
+        return out
 
     # The meta-labelling forest is the one genuinely slow thing in the app —
     # seconds per symbol, versus milliseconds for everything else. It gets its
@@ -554,7 +572,13 @@ class AppState:
 
         # What the store already holds, and how stale each one is.
         known = self.prices.known(todo)
-        cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
+        # Measured against the last session that has actually closed, not against
+        # yesterday's date. Those differ every weekend and every holiday, and on
+        # the wrong side: Friday's bar is older than Saturday, so a calendar
+        # cutoff calls the whole universe stale from Friday's close to Monday's
+        # and re-downloads all of it — the slow full sweep, every weekend.
+        from . import session as _session
+        cutoff = pd.Timestamp(_session.last_completed_session())
         stale = sorted(s for s, d in known.items() if d < cutoff)
         fresh = [s for s, d in known.items() if d >= cutoff]
         missing = [s for s in todo if s not in known]
@@ -964,6 +988,41 @@ def create_app(state: AppState):
         state._meta_size_cache.clear()
         return {"ok": True, "enabled": state.meta_sizing_enabled()}
 
+    @app.get("/api/timing")
+    def timing_endpoint(symbol: str = "SPY", tf: str = "1D", side: str = "buy",
+                        price: float = 0.0):
+        """When, inside today, to work an order the daily regime already allows.
+
+        Deliberately says nothing about direction. The daily chain decides
+        whether a position is permitted and the forest decides its size; this
+        only judges the fill. Keeping those separate is what stops the terminal
+        holding two opinions the user has to arbitrate between.
+        """
+        from . import intraday, session
+        from .tpo import build_profile
+
+        symbol = symbol.strip().upper() or "SPY"
+        df, source = state.intraday_for(symbol, (tf or "1D").upper())
+        real = not str(source).startswith("synthetic")
+        profile = build_profile(df)
+        out = intraday.entry_timing(
+            df, price=(float(price) or None), profile=profile, side=side)
+        out.update({
+            "symbol": symbol, "dataSource": source, "real": real,
+            "session": session.describe(),
+            "isOpen": session.is_open(),
+            "halfDay": session.is_half_day(),
+            "atr": intraday.atr(df),
+            "valueArea": {"poc": profile.get("poc"), "vah": profile.get("vah"),
+                          "val": profile.get("val")},
+        })
+        if not real:
+            # A timing call on invented bars would be advice about a market that
+            # does not exist. The levels still render; the verdict does not.
+            out["verdict"] = "no data"
+            out["reason"] = "Placeholder bars — no timing read on data this is not."
+        return out
+
     @app.get("/api/tpo")
     def tpo_endpoint(symbol: str = "SPY", tf: str = "1D", rows: int = 48,
                      period: int = 30, value: float = 0.70):
@@ -1022,8 +1081,14 @@ def create_app(state: AppState):
              "c": r4(c), "up": bool(c >= o)}
             for ts, o, h, lo, c in zip(df.index, df["Open"], df["High"], df["Low"], df["Close"])
         ]
+        # VWAP rides along on the intraday timeframes only — on a daily chart it
+        # would be an average of averages, which is not what the name means.
+        from . import intraday
+        vw = intraday.vwap(df)
         return {"symbol": symbol, "tf": tf, "bars": bars, "ma20": ser(ma20), "ma50": ser(ma50),
-                "rsi": ser(rsi), "momentum": ser(mom), "source": source}
+                "rsi": ser(rsi), "momentum": ser(mom), "source": source,
+                "vwap": None if vw is None else ser(vw),
+                "openingRange": intraday.opening_range(df)}
 
     @app.get("/api/scan")
     def scan_endpoint(symbols: str = "", top: int = 20, universe: str = "",

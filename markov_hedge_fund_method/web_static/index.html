@@ -466,6 +466,18 @@
     font-family:var(--mono); font-size:10px; letter-spacing:1px; white-space:nowrap}
   .zoom-tag.on:hover{background:rgba(77,163,255,.2)}
   .loading canvas.px{opacity:.35}
+  /* entry timing — execution quality, deliberately styled apart from the regime
+     colours so it is never mistaken for a directional call */
+  .timing-chip{display:none; align-items:center; gap:6px; cursor:pointer;
+    border:1px solid var(--edge); border-radius:3px; padding:2px 8px; margin-left:8px;
+    font-family:var(--mono); font-size:10px; letter-spacing:1px; color:var(--dim);
+    background:#1b1b1c; white-space:nowrap}
+  .timing-chip.on{display:inline-flex}
+  .timing-chip:hover{border-color:var(--cyan)}
+  .timing-chip b{font-weight:700}
+  .timing-chip.now{border-color:var(--green); color:var(--green)}
+  .timing-chip.fair{border-color:var(--amber); color:var(--amber)}
+  .timing-chip.wait{border-color:var(--silver2); color:var(--silver)}
   /* news */
   /* The centre column belongs to the chart and the headlines. News gets room to
      show three or four items without scrolling; the chart takes everything the
@@ -677,6 +689,8 @@
           </span>
           <span class="tpo-toggle" id="tpo-toggle" onclick="toggleTPO()"
                 title="Market Profile — where price spent its time, not just where it went">▦ TPO</span>
+          <span class="timing-chip" id="timing-chip" onclick="loadTiming()"
+                title="loading entry timing…"></span>
           <span class="zoom-tag" id="zoom-tag" onclick="resetZoom()"
                 title="scroll to zoom · drag to pan · double-click to reset"></span>
         </div>
@@ -924,7 +938,8 @@ function selectSymbol(s, addToWatch){
   markActive(s); $('o-symbol').value = s;
   VIEW = null;                               // a new series starts unzoomed
   META_OVERRIDE=false;                       // a new symbol is a new decision
-  loadState(false); loadNews(); loadPortfolio(); refreshMetaSizing();
+  INTRADAY_CACHE.clear(); TPO_CACHE.clear(); TPO_DATA = null;
+  loadState(false); loadNews(); loadPortfolio(); refreshMetaSizing(); loadTiming();
   if(TPO_ON) loadTPO();
 }
 /* validate against Alpaca (when connected) before adding a searched symbol */
@@ -1011,14 +1026,16 @@ let VIEW = null;                    // null = "whatever the timeframe implies"
 
 function sliceRange(ch, a, b){
   const s = arr => (arr||[]).slice(a,b);
-  return { bars:s(ch.bars), ma20:s(ch.ma20), ma50:s(ch.ma50), rsi:s(ch.rsi), momentum:s(ch.momentum) };
+  return { bars:s(ch.bars), ma20:s(ch.ma20), ma50:s(ch.ma50), rsi:s(ch.rsi),
+           momentum:s(ch.momentum), vwap: ch.vwap ? s(ch.vwap) : null };
 }
 function chartSource(){
   if(typeof TF === 'string'){
     if(!INTRADAY) return null;
     const reg = LAST ? LAST.regime : 'sideways';
     return { bars: INTRADAY.bars.map(b=>({...b, regime:reg})), ma20:INTRADAY.ma20,
-             ma50:INTRADAY.ma50, rsi:INTRADAY.rsi, momentum:INTRADAY.momentum };
+             ma50:INTRADAY.ma50, rsi:INTRADAY.rsi, momentum:INTRADAY.momentum,
+             vwap: INTRADAY.vwap || null };
   }
   return LAST ? LAST.chart : null;
 }
@@ -1100,11 +1117,29 @@ function refreshChart(){
   if(typeof TF === 'string') loadIntraday();
   else { INTRADAY = null; renderChart(); }
 }
+/* Switching timeframe or flipping into the profile asks the same question of
+   the same bars, so a view you have already seen is redrawn from memory first
+   and only then refreshed. The point is that the old chart stays on screen
+   while that happens — a blank canvas between two views reads as breakage
+   however fast the round trip is. */
+const INTRADAY_CACHE = new Map();
+const FRESH_MS = 45000;
+
+function tfKey(sym, tf){ return sym+'|'+tf; }
+
 async function loadIntraday(){
   const tf = TF, sym = SYMBOL;
-  const card = document.querySelector('.chartcard'); if(card) card.classList.add('loading');
+  const key = tfKey(sym, tf);
+  const hit = INTRADAY_CACHE.get(key);
+  if(hit){                                  // paint immediately, no flash
+    INTRADAY = hit.data; renderChart();
+    if(Date.now() - hit.t < FRESH_MS) return;
+  }
+  const card = document.querySelector('.chartcard');
+  if(card && !hit) card.classList.add('loading');
   try{
     const d = await api('/api/candles?symbol='+encodeURIComponent(sym)+'&tf='+tf);
+    INTRADAY_CACHE.set(key, {t: Date.now(), data: d});
     if(TF === tf && SYMBOL === sym){
       INTRADAY = d; renderChart();
       // Placeholder candles must not pass for the real thing — say why, once.
@@ -1388,7 +1423,8 @@ function drawChart(chart){
   const bars = chart.bars; if(!bars.length) return;
   const pad = PAD;
   const highs = bars.map(b=>b.h), lows = bars.map(b=>b.l);
-  const mas = chart.ma20.filter(v=>v!=null).concat(chart.ma50.filter(v=>v!=null));
+  const mas = chart.ma20.filter(v=>v!=null).concat(chart.ma50.filter(v=>v!=null))
+    .concat((chart.vwap||[]).filter(v=>v!=null));
   let hi = Math.max(...highs, ...mas), lo = Math.min(...lows, ...mas);
   const span=(hi-lo)||1; lo-=span*.04; hi+=span*.04;
   const X = i => pad.l + (w-pad.l-pad.r) * (i/((bars.length-1)||1));
@@ -1419,6 +1455,14 @@ function drawChart(chart){
   // moving averages on top
   line(ctx, chart.ma20, X, Y, '#f5c451', 1.3);
   line(ctx, chart.ma50, X, Y, '#8c9298', 1.3);
+  // VWAP is dashed on purpose: it is a different kind of line from a moving
+  // average — an average of what was *paid*, not of where price closed — and a
+  // third solid line would just read as a slower MA.
+  if(chart.vwap){
+    ctx.save(); ctx.setLineDash([5,4]);
+    line(ctx, chart.vwap, X, Y, C.cyan, 1.4);
+    ctx.restore();
+  }
 }
 function line(ctx, arr, X, Y, color, lw){
   ctx.strokeStyle=color; ctx.lineWidth=lw; ctx.beginPath(); let started=false;
@@ -1719,6 +1763,50 @@ function tpoControls(){
     '</div>';
 }
 
+/* ---------- entry timing ----------
+   Fill quality for an order the daily regime already allows: where price sits
+   against VWAP, the value area and the opening range, and whether this is a
+   sane moment in the session to be working it. It says nothing about
+   direction — that is the chain's job, and two opinions would leave the user
+   arbitrating between them. */
+let TIMING = null;
+
+async function loadTiming(){
+  const el = $('timing-chip'); if(!el) return;
+  try{
+    TIMING = await api('/api/timing?symbol='+encodeURIComponent(SYMBOL));
+  }catch(e){
+    el.className='timing-chip'; TIMING=null; return;
+  }
+  renderTiming();
+}
+
+function renderTiming(){
+  const el = $('timing-chip'); if(!el) return;
+  const d = TIMING;
+  if(!d || d.score==null || d.verdict==='no data'){
+    el.className = 'timing-chip on';
+    el.innerHTML = '⏱ <b>—</b>';
+    el.title = d && d.reason ? d.reason : 'no intraday data for a timing read';
+    return;
+  }
+  const v = d.verdict;
+  el.className = 'timing-chip on ' + (v==='now'?'now':v==='fair'?'fair':'wait');
+  el.innerHTML = '⏱ <b>'+v.toUpperCase()+'</b> '+Math.round(d.score);
+  // The whole reasoning goes in the tooltip rather than a panel: it is a
+  // sentence, it is read once, and the centre column belongs to the chart.
+  const parts = [d.reason, '', d.session];
+  if(d.vwap!=null) parts.push('VWAP '+fmt(d.vwap,2));
+  if(d.valueArea && d.valueArea.poc!=null){
+    parts.push('value '+fmt(d.valueArea.val,2)+'–'+fmt(d.valueArea.vah,2)+
+               '  POC '+fmt(d.valueArea.poc,2));
+  }
+  if(d.openingRange) parts.push('opening range '+fmt(d.openingRange.low,2)+'–'+fmt(d.openingRange.high,2));
+  if(d.atr!=null) parts.push('ATR '+fmt(d.atr,2));
+  parts.push('', 'Execution quality only — this does not say whether to own the name.');
+  el.title = parts.join('\n');
+}
+
 function toggleTPO(){
   TPO_ON = !TPO_ON;
   $('tpo-toggle').classList.toggle('on', TPO_ON);
@@ -1728,13 +1816,26 @@ function toggleTPO(){
   if(TPO_ON) loadTPO(); else renderChart();
 }
 
+const TPO_CACHE = new Map();
+
 async function loadTPO(){
   const wrap = $('tpo-wrap'); if(!wrap) return;
   const tf = (typeof TF === 'string') ? TF : '1D';   // a profile is a session
-  wrap.innerHTML = '<div class="tpo-head">Building the profile…</div>';
+  const key = [SYMBOL, tf, TPO_VA, TPO_PERIOD].join('|');
+  const hit = TPO_CACHE.get(key);
+  if(hit){
+    TPO_DATA = hit.data; renderTPO();
+    if(Date.now() - hit.t < FRESH_MS) return;
+  }else if(!TPO_DATA){
+    // Only announce the wait when there is nothing to look at. Replacing a
+    // drawn profile with a line of text is a flash of blank, not feedback.
+    wrap.innerHTML = '<div class="tpo-head">Building the profile…</div>';
+  }
   try{
-    TPO_DATA = await api('/api/tpo?symbol='+encodeURIComponent(SYMBOL)+
+    const d = await api('/api/tpo?symbol='+encodeURIComponent(SYMBOL)+
       '&tf='+encodeURIComponent(tf)+'&value='+TPO_VA+'&period='+TPO_PERIOD);
+    TPO_CACHE.set(key, {t: Date.now(), data: d});
+    TPO_DATA = d;
     renderTPO();
   }catch(e){
     wrap.innerHTML = '<div class="tpo-head tpo-warn">profile failed: '+esc(e.message)+
@@ -2664,7 +2765,9 @@ async function boot(){
   updateNotifyBtn();
   pollAlerts();
   await syncWatchlist();          // restore the stored list, then keep it in step
+  loadTiming();
   setInterval(()=>{ loadState(true); loadPortfolio(); }, 15000);
+  setInterval(loadTiming, 60000);
   setInterval(()=>{ loadNews(); }, 120000);
   setInterval(()=>refreshWatchlist(currentWatch()), 30000);
   setInterval(syncWatchlist, 20000);   // picks up names added from the phone
