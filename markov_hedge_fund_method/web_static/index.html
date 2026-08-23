@@ -631,6 +631,7 @@
           title="Self-healing status — degraded feeds, repairs made">🩺 <span id="health-dot">HEALTH</span></span>
     <span class="chip halted-chip" id="halt-ind" style="display:none">⛔ HALTED</span>
     <span class="chip" id="chip-acct">ACCT <b id="v-acct">none</b></span>
+    <span class="chip" id="chip-pdt" style="display:none">DAY TRADES <b id="v-pdt">—</b></span>
     <span class="chip"><span class="led off" id="led-conn"></span><b id="v-conn">offline</b></span>
     <span class="chip" id="chip-build" title="build running — page hash should match the server">BUILD <b id="v-build">…</b></span>
     <span class="chip clock" id="clock">--:--:--</span>
@@ -938,6 +939,7 @@ function selectSymbol(s, addToWatch){
   markActive(s); $('o-symbol').value = s;
   VIEW = null;                               // a new series starts unzoomed
   META_OVERRIDE=false;                       // a new symbol is a new decision
+  PDT_OVERRIDE=false;
   INTRADAY_CACHE.clear(); TPO_CACHE.clear(); TPO_DATA = null;
   loadState(false); loadNews(); loadPortfolio(); refreshMetaSizing(); loadTiming();
   if(TPO_ON) loadTPO();
@@ -1558,6 +1560,7 @@ function numOrNull(id){ const v=$(id).value.trim(); return v===''?null:Number(v)
    it says so here while the ticket is still being filled in — a resized order
    discovered after the fact is a bug, not a feature. */
 let META_SIZE=null, META_OVERRIDE=false, META_SEQ=0;
+let PDT_OVERRIDE=false;   // armed only by an actual day-trade refusal
 async function refreshMetaSizing(){
   const el=$('metasize'); if(!el) return;
   const sym=$('o-symbol').value.trim().toUpperCase();
@@ -1595,6 +1598,7 @@ async function submitOrder(){
     take_profit_limit:numOrNull('o-tp'), stop_loss_stop:numOrNull('o-slstop'),
     lots:numOrNull('o-lots'), lot_size:(numOrNull('o-lotsize')||100) };
   if(META_OVERRIDE) body.skipMetaSizing=true;
+  if(PDT_OVERRIDE) body.skipPdtGuard=true;
   try{
     const r=await api('/api/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     log(`order sent ${r.summary} → <b>${r.id}</b> [${r.status}]`,'ok');
@@ -1602,8 +1606,28 @@ async function submitOrder(){
       log(`meta-labelled to ${r.metaSizing.multiplier.toFixed(2)}× — sent `+
           `${r.metaSizing.appliedQty!=null?r.metaSizing.appliedQty+' shares':'$'+r.metaSizing.appliedNotional}`,'warn');
     }
-    META_OVERRIDE=false; loadPortfolio(); refreshMetaSizing();
-  }catch(e){ log('order rejected: '+e.message,'err'); }
+    if(r.dayTrade){
+      log('day trade '+(r.dayTrade.used+1)+' of 3 — '+r.dayTrade.detail,
+          r.dayTrade.severity==='warn'?'warn':'dim');
+    }
+    // The price the order actually met, when it differs from the delayed chart
+    // the decision was taken on.
+    if(r.priceCheck && r.priceCheck.throughTheBook){
+      log('limit '+fmt(r.priceCheck.limit,2)+' was through the book (mid '+
+          fmt(r.priceCheck.mid,2)+') — filled at the touch','warn');
+    }
+    META_OVERRIDE=false; PDT_OVERRIDE=false;
+    loadPortfolio(); refreshMetaSizing(); loadDayTrades();
+  }catch(e){
+    // The day-trade refusal is the one rejection worth offering a way past, so
+    // it arms the override rather than just printing and losing the ticket.
+    if(/day trade/i.test(e.message||'')){
+      PDT_OVERRIDE=true;
+      log('order held: '+e.message+' — press Submit again to send it anyway','err');
+    }else{
+      log('order rejected: '+e.message,'err');
+    }
+  }
 }
 async function cancelAll(){
   try{ const r=await api('/api/orders/cancel_all',{method:'POST'}); log(`cancel requested for ${r.cancelled} order(s)`,'warn'); loadPortfolio(); }
@@ -1761,6 +1785,26 @@ function tpoControls(){
     '<select onchange="setTpoPeriod(this.value)" title="Minutes per letter. Thirty is standard; '+
       'shorter periods give a finer profile on a quiet session.">'+per+'</select>'+
     '</div>';
+}
+
+/* ---------- day-trade counter ----------
+   Only shown when the rule actually binds: a margin account under $25,000 gets
+   three day trades per rolling five business days, and the fourth flags it for
+   ninety days. Above the floor the rule is moot and the chip stays hidden,
+   because a counter that is always there is a counter nobody reads. */
+async function loadDayTrades(){
+  const chip = $('chip-pdt'); if(!chip) return;
+  let d; try{ d = await api('/api/daytrades'); }catch(e){ chip.style.display='none'; return; }
+  if(!d.connected || !d.applies){ chip.style.display='none'; return; }
+  chip.style.display='';
+  const left = d.remaining;
+  $('v-pdt').textContent = d.used + '/' + d.limit;
+  $('v-pdt').style.color = left<=0 ? C.bear : left===1 ? C.amber : C.bull;
+  chip.title = left<=0
+    ? 'No day trades left. A fourth inside five business days flags the account '
+      + 'as a pattern day trader and restricts it for 90 days.'
+    : left + ' day trade' + (left===1?'':'s') + ' left before the account would be '
+      + 'flagged. Positions held overnight are not day trades.';
 }
 
 /* ---------- entry timing ----------
@@ -2765,8 +2809,9 @@ async function boot(){
   updateNotifyBtn();
   pollAlerts();
   await syncWatchlist();          // restore the stored list, then keep it in step
-  loadTiming();
+  loadTiming(); loadDayTrades();
   setInterval(()=>{ loadState(true); loadPortfolio(); }, 15000);
+  setInterval(loadDayTrades, 60000);
   setInterval(loadTiming, 60000);
   setInterval(()=>{ loadNews(); }, 120000);
   setInterval(()=>refreshWatchlist(currentWatch()), 30000);

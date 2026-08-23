@@ -26,6 +26,13 @@ class Account:
     buying_power: float
     status: str
     last_equity: float = 0.0  # yesterday's close — drives day P&L
+    # Pattern-day-trader state. FINRA caps a margin account under $25,000 at
+    # three day trades per rolling five business days; a fourth flags the
+    # account and restricts it for ninety days. Alpaca tracks the count, so the
+    # terminal has no excuse for letting a user walk into it blind.
+    daytrade_count: int = 0
+    pattern_day_trader: bool = False
+    daytrading_buying_power: float = 0.0
 
 
 @dataclass
@@ -90,7 +97,50 @@ class AlpacaBroker:
             buying_power=float(a.buying_power),
             status=str(a.status),
             last_equity=float(getattr(a, "last_equity", 0) or 0),
+            daytrade_count=int(getattr(a, "daytrade_count", 0) or 0),
+            pattern_day_trader=bool(getattr(a, "pattern_day_trader", False)),
+            daytrading_buying_power=float(getattr(a, "daytrading_buying_power", 0) or 0),
         )
+
+    def latest_quote(self, symbol: str) -> dict | None:
+        """The current bid/ask from Alpaca — the venue the order will meet.
+
+        Analysis runs on whatever feed gives the best picture of the session,
+        and the default one is delayed by about fifteen minutes. That is fine
+        for deciding *whether* to own something over days, and not fine for
+        deciding the limit price you are about to send: fifteen minutes is
+        plenty of room for a limit to be posted through the market or left
+        stranded behind it.
+
+        So the price that goes on the ticket comes from the broker. Even the
+        free IEX quote is the right thing to ask here, because the question is
+        not "what is this worth" but "what will my order actually meet".
+
+        None when no quote is available — an order still goes, it just goes
+        without the check, which is the behaviour that existed before.
+        """
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockLatestQuoteRequest
+
+            client = StockHistoricalDataClient(self.settings.api_key,
+                                               self.settings.api_secret)
+            sym = symbol.strip().upper()
+            q = client.get_stock_latest_quote(
+                StockLatestQuoteRequest(symbol_or_symbols=sym))[sym]
+            bid, ask = float(q.bid_price or 0), float(q.ask_price or 0)
+            if bid <= 0 and ask <= 0:
+                return None
+            mid = (bid + ask) / 2.0 if (bid > 0 and ask > 0) else (bid or ask)
+            spread = (ask - bid) if (bid > 0 and ask > 0) else 0.0
+            return {
+                "symbol": sym, "bid": bid, "ask": ask, "mid": round(mid, 4),
+                "spread": round(spread, 4),
+                "spreadPct": round(spread / mid * 100.0, 4) if mid else None,
+                "asOf": str(getattr(q, "timestamp", "") or ""),
+            }
+        except Exception:  # noqa: BLE001 — a missing quote must not stop an order
+            return None
 
     @staticmethod
     def _position(p) -> Position:
@@ -185,6 +235,32 @@ class AlpacaBroker:
             status=str(getattr(submitted, "status", "accepted")),
             summary=describe(ticket),
         )
+
+    def symbols_opened_today(self) -> set[str]:
+        """Symbols with a buy filled in this session — the first leg of a
+        potential day trade. Empty on any failure, and the caller must treat
+        that as "unknown" rather than "none", or a broker hiccup would quietly
+        switch the day-trade guard off.
+        """
+        from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.requests import GetOrdersRequest
+
+        from . import session
+
+        out: set[str] = set()
+        try:
+            since = session.session_bounds(None)
+            after = since[0] if since else None
+            orders = self.client.get_orders(filter=GetOrdersRequest(
+                status=QueryOrderStatus.CLOSED, after=after, limit=500))
+            for o in orders:
+                if str(getattr(o, "status", "")).lower() != "filled":
+                    continue
+                if str(getattr(o, "side", "")).lower().endswith("buy"):
+                    out.add(str(o.symbol).upper())
+        except Exception:  # noqa: BLE001
+            return set()
+        return out
 
     def list_open_orders(self) -> list[OpenOrder]:
         from alpaca.trading.enums import QueryOrderStatus

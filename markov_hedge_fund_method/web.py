@@ -383,6 +383,50 @@ class AppState:
         self._intraday_cache[key] = (time.monotonic(), out[0], out[1])
         return out
 
+    def pdt_check(self, ticket) -> dict | None:
+        """Would this order be the day trade that flags the account?
+
+        Returns None when there is nothing to say — no broker, or an account the
+        rule does not bind. Deliberately quiet: the guard exists for one
+        specific mistake, not to comment on ordinary trading.
+        """
+        from . import pdt
+
+        if self.broker is None:
+            return None
+        acct = self.broker.get_account()
+        if pdt.exempt(acct.equity, acct.pattern_day_trader):
+            return None
+
+        side = str(getattr(ticket, "side", "buy") or "buy").lower()
+        # An empty history is "unknown", not "nothing bought today". Inferring
+        # safety from a failed lookup is how a guard silently stops guarding, so
+        # a sell with no history falls back to whether it reduces a position.
+        opened = self.broker.symbols_opened_today()
+        closing = None
+        if not opened and side in ("sell", "short"):
+            closing = self._reduces_position(ticket.symbol, side)
+
+        v = pdt.evaluate(symbol=ticket.symbol, side=side, equity=acct.equity,
+                         used=acct.daytrade_count, opened_today=opened,
+                         pattern_day_trader=acct.pattern_day_trader,
+                         closing=closing)
+        if v.severity == "ok":
+            return None
+        return {"headline": v.headline, "detail": v.detail, "severity": v.severity,
+                "used": v.used, "remaining": v.remaining, "isDayTrade": v.is_day_trade}
+
+    def _reduces_position(self, symbol: str, side: str) -> bool | None:
+        """Whether an order shrinks an existing position. None if unknowable."""
+        try:
+            for p in self.broker.list_positions():
+                if p.symbol.upper() == symbol.strip().upper():
+                    return (p.qty > 0 and side in ("sell", "short")) or \
+                           (p.qty < 0 and side == "buy")
+        except Exception:  # noqa: BLE001
+            return None
+        return False
+
     # The meta-labelling forest is the one genuinely slow thing in the app —
     # seconds per symbol, versus milliseconds for everything else. It gets its
     # own cache and a long TTL, and nothing reaches it unless the user opens the
@@ -992,6 +1036,22 @@ def create_app(state: AppState):
         state.telegram.save(metaSizing=enabled)
         state._meta_size_cache.clear()
         return {"ok": True, "enabled": state.meta_sizing_enabled()}
+
+    @app.get("/api/daytrades")
+    def daytrades_endpoint():
+        """The standing day-trade counter for the header."""
+        from . import pdt
+
+        if state.broker is None:
+            return {"connected": False, "applies": False, "text": ""}
+        try:
+            a = state.broker.get_account()
+        except Exception as exc:  # noqa: BLE001
+            return {"connected": False, "applies": False, "text": "", "error": str(exc)}
+        out = pdt.summary(a.equity, a.daytrade_count, a.pattern_day_trader)
+        out["connected"] = True
+        out["equity"] = a.equity
+        return out
 
     @app.get("/api/timing")
     def timing_endpoint(symbol: str = "SPY", tf: str = "1D", side: str = "buy",
@@ -1688,6 +1748,30 @@ def create_app(state: AppState):
                     "size. Send it again with 'skipMetaSizing' to override."))
         return _replace(ticket, **changes) if changes else ticket
 
+    def _limit_drift(ticket, quote) -> dict | None:
+        """How far the ticket's limit sits from the live book.
+
+        A limit posted through the other side fills immediately at the touch,
+        which is usually not what someone typing a limit intended; one left far
+        behind the market simply never fills. Both are worth saying out loud
+        when the price came off a delayed chart.
+        """
+        px = getattr(ticket, "limit_price", None)
+        if not px or not quote or not quote.get("mid"):
+            return None
+        px, mid = float(px), float(quote["mid"])
+        gap = (px - mid) / mid * 100.0
+        side = str(getattr(ticket, "side", "buy") or "buy").lower()
+        through = (side == "buy" and px >= float(quote["ask"] or px)) or \
+                  (side == "sell" and px <= float(quote["bid"] or px))
+        return {
+            "limit": px, "mid": mid, "driftPct": round(gap, 3),
+            "throughTheBook": bool(through),
+            "note": ("marketable — it will fill at the touch, not at your limit"
+                     if through else
+                     f"{abs(gap):.2f}% {'above' if gap > 0 else 'below'} the mid"),
+        }
+
     @app.post("/api/orders")
     async def submit_order(request: Request):
         if state.broker is None:
@@ -1724,6 +1808,32 @@ def create_app(state: AppState):
                 if mult < 1.0:
                     ticket = _scale_ticket(ticket, mult)
 
+        # The day-trade guard. It refuses only the specific order that would be
+        # the fourth day trade in a rolling five sessions on an account under
+        # the equity floor — the one action that costs ninety days of access.
+        # Everything else passes silently, because someone holding for days is
+        # not day trading and must never be nagged as though they were.
+        pdt_note = None
+        if not data.get("skipPdtGuard"):
+            try:
+                pdt_note = state.pdt_check(ticket)
+            except Exception:  # noqa: BLE001 — a guard that breaks must not
+                pdt_note = None      # take the order down with it
+        if pdt_note is not None and pdt_note.get("severity") == "block":
+            raise HTTPException(status_code=409, detail=(
+                f"{pdt_note['headline']}. {pdt_note['detail']} "
+                "Send it again with 'skipPdtGuard' to override."))
+
+        # Last look at the price the order will actually meet. The analysis feed
+        # is consolidated but delayed; the broker's quote is real-time and is
+        # the book this ticket lands in. Advisory only — a stale-looking limit
+        # is worth flagging, never worth blocking on.
+        quote = None
+        try:
+            quote = state.broker.latest_quote(ticket.symbol)
+        except Exception:  # noqa: BLE001
+            quote = None
+
         try:
             result = state.broker.submit_ticket(ticket)
         except OrderValidationError as exc:
@@ -1745,6 +1855,13 @@ def create_app(state: AppState):
         except Exception:  # noqa: BLE001
             pass
         out = {"id": result.id, "status": result.status, "summary": result.summary}
+        if quote is not None:
+            out["quote"] = quote
+            drift = _limit_drift(ticket, quote)
+            if drift is not None:
+                out["priceCheck"] = drift
+        if pdt_note is not None and pdt_note.get("severity") in ("warn", "info"):
+            out["dayTrade"] = pdt_note
         if sizing is not None and sizing.get("engaged") and float(sizing["multiplier"]) < 1.0:
             # Say so in the response. An order that went out smaller than the
             # one you typed must never be reported as though nothing happened.
