@@ -296,28 +296,61 @@ def _alpaca_intraday(ticker: str, tf: str, api_key: str, api_secret: str) -> pd.
     return df
 
 
+INTRADAY_SOURCES = ("auto", "yahoo", "alpaca")
+
+# What each feed actually is, in one line, so the terminal can say it out loud
+# rather than leaving the user to guess what "live" means.
+SOURCE_NAME = {"yahoo": "Yahoo", "alpaca": "Alpaca"}
+SOURCE_LABEL = {
+    "yahoo": "Yahoo — consolidated tape, free, delayed ~15 min",
+    "alpaca": "Alpaca — real-time on your data plan (IEX only on the free tier)",
+}
+
+
+def _intraday_order(settings) -> list[str]:
+    """Which feeds to try, in order.
+
+    Default is Yahoo first, and that is not an arbitrary preference. Alpaca's
+    free data plan serves IEX only — around 2-3% of consolidated volume — so
+    trying it first means that connecting a broker account makes the intraday
+    bars *worse* than having no account at all. Yahoo carries the whole tape.
+    Anyone paying for SIP wants the opposite, hence the setting.
+    """
+    pref = str(getattr(settings, "intraday_source", "auto") or "auto").lower()
+    has_keys = bool(settings.has_credentials)
+    if pref == "alpaca":
+        return ["alpaca", "yahoo"] if has_keys else ["yahoo"]
+    if pref == "yahoo":
+        return ["yahoo", "alpaca"] if has_keys else ["yahoo"]
+    return ["yahoo", "alpaca"] if has_keys else ["yahoo"]
+
+
 def get_intraday_ohlc(settings, tf: str) -> pd.DataFrame:
     """Intraday OHLC (1H/4H/5-min for 1D/30-min for 1W).
 
-    Tries Alpaca when credentials exist, then yfinance. Intraday feeds fail for
-    plenty of mundane reasons — plan entitlements, a symbol with no intraday
-    history, a quiet session — so one source going down should not blank the
-    chart. Raises with both reasons only when neither source can deliver.
+    The feed you analyse and the venue you trade on are unrelated choices. This
+    picks the feed; execution goes to Alpaca regardless, and Alpaca's order API
+    neither knows nor cares which data produced the ticket.
+
+    Intraday feeds fail for plenty of mundane reasons — plan entitlements, a
+    symbol with no intraday history, a quiet session — so one source going down
+    must not blank the chart. Raises with every reason only when none deliver.
+    The frame carries the feed that served it in `.attrs["source"]`, because a
+    chart that will not say where its bars came from is a chart you cannot check.
     """
     errors = []
-    if settings.has_credentials:
+    for name in _intraday_order(settings):
         try:
-            df = _alpaca_intraday(settings.ticker, tf, settings.api_key, settings.api_secret)
+            if name == "alpaca":
+                df = _alpaca_intraday(settings.ticker, tf,
+                                      settings.api_key, settings.api_secret)
+            else:
+                df = _yfinance_intraday(settings.ticker, tf)
             if df is not None and not df.empty:
+                df.attrs["source"] = name
+                df.attrs["sourceLabel"] = SOURCE_LABEL[name]
                 return df
-            errors.append("Alpaca returned no bars")
+            errors.append(f"{SOURCE_NAME[name]} returned no bars")
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"Alpaca: {exc}")
-    try:
-        df = _yfinance_intraday(settings.ticker, tf)
-        if df is not None and not df.empty:
-            return df
-        errors.append("Yahoo returned no bars")
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"Yahoo: {exc}")
+            errors.append(f"{SOURCE_NAME[name]}: {exc}")
     raise RuntimeError("; ".join(errors) or "no intraday data available")

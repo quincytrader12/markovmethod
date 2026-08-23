@@ -45,6 +45,18 @@ class Settings:
     size_scale: float = 0.5          # STANDALONE: signal/scale before the cap
     api_key: str | None = None
     api_secret: str | None = None
+    # Where intraday bars come from. Execution is always Alpaca — the venue you
+    # trade on and the feed you analyse are unrelated choices, and Alpaca's order
+    # API neither knows nor cares which data led to the ticket.
+    #
+    #   "auto"   Yahoo when it works, Alpaca otherwise. The default, because
+    #            Alpaca's free tier is IEX-only — roughly 2-3% of consolidated
+    #            volume — so having credentials would otherwise make intraday
+    #            bars *worse* than not having them.
+    #   "yahoo"  consolidated tape, free, ~15 min delayed, unofficial endpoint.
+    #   "alpaca" whatever the account's data plan entitles it to: IEX on the free
+    #            tier, full SIP on a paid one, and real-time either way.
+    intraday_source: str = "auto"
     # Active Alpaca profile (see accounts.py); None = legacy env/keychain keys.
     account: str | None = None
     # Whether the active profile's keys are paper (True) or live (False/None).

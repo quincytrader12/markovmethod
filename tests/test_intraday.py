@@ -286,3 +286,66 @@ def test_vwap_is_inside_the_y_scale():
 def test_the_chip_says_it_is_not_a_directional_call():
     html = _client().get("/").text
     assert "does not say whether to own the name" in html
+
+
+# ── where the bars come from ────────────────────────────────────────────────
+class _Fake:
+    """Minimal stand-in for Settings — only what the selector reads."""
+    def __init__(self, pref="auto", keys=True):
+        self.intraday_source = pref
+        self._keys = keys
+        self.ticker = "SPY"
+        self.api_key = "k" if keys else None
+        self.api_secret = "s" if keys else None
+
+    @property
+    def has_credentials(self):
+        return self._keys
+
+
+def test_yahoo_is_tried_first_by_default():
+    """Alpaca's free plan is IEX only — a few percent of consolidated volume —
+    so trying it first would make connecting a broker account produce *worse*
+    intraday bars than having no account at all."""
+    from markov_hedge_fund_method.market_data import _intraday_order
+    assert _intraday_order(_Fake("auto", keys=True))[0] == "yahoo"
+
+
+def test_a_paid_data_plan_can_ask_for_alpaca_first():
+    from markov_hedge_fund_method.market_data import _intraday_order
+    assert _intraday_order(_Fake("alpaca", keys=True))[0] == "alpaca"
+
+
+def test_every_preference_still_falls_back():
+    """One feed being down must never blank the chart."""
+    from markov_hedge_fund_method.market_data import INTRADAY_SOURCES, _intraday_order
+    for pref in INTRADAY_SOURCES:
+        assert len(_intraday_order(_Fake(pref, keys=True))) == 2
+
+
+def test_without_credentials_only_the_free_feed_is_possible():
+    from markov_hedge_fund_method.market_data import _intraday_order
+    for pref in ("auto", "yahoo", "alpaca"):
+        assert _intraday_order(_Fake(pref, keys=False)) == ["yahoo"]
+
+
+def test_the_error_names_every_feed_it_tried():
+    """"intraday unavailable" with no reason leaves nothing to act on."""
+    import pytest as _pytest
+
+    import markov_hedge_fund_method.market_data as md
+
+    def boom(msg):
+        def _f(*a, **k):
+            raise RuntimeError(msg)
+        return _f
+
+    saved = (md._alpaca_intraday, md._yfinance_intraday)
+    md._alpaca_intraday = boom("subscription does not permit")
+    md._yfinance_intraday = boom("no data")
+    try:
+        with _pytest.raises(RuntimeError) as e:
+            md.get_intraday_ohlc(_Fake("auto", keys=True), "1D")
+        assert "Alpaca" in str(e.value) and "Yahoo" in str(e.value)
+    finally:
+        md._alpaca_intraday, md._yfinance_intraday = saved

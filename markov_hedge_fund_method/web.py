@@ -370,7 +370,12 @@ class AppState:
             out = synthetic_intraday(tf, seed=_seed(symbol)), "synthetic (demo)"
         else:
             try:
-                out = get_intraday_ohlc(replace(self.settings, ticker=symbol), tf), "live"
+                df = get_intraday_ohlc(replace(self.settings, ticker=symbol), tf)
+                # Name the feed rather than saying "live". Yahoo's consolidated
+                # tape and Alpaca's IEX-only free plan are different pictures of
+                # the same session, and which one drew the chart is something
+                # the user should be able to read off the screen.
+                out = df, df.attrs.get("sourceLabel") or "live"
             except Exception as exc:  # noqa: BLE001 — fall back so the chart never blanks
                 # Carry the reason: "failed to fetch" alone leaves nothing to act on.
                 out = (synthetic_intraday(tf, seed=_seed(symbol)),
