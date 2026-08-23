@@ -68,7 +68,8 @@ def test_there_is_room_on_the_right_for_the_tags():
 def test_the_chart_only_redraws_when_the_entry_moves():
     """The portfolio polls every fifteen seconds; repainting each tick would
     undo the user's zoom and pan for no gain."""
-    assert "if((POSITION && POSITION.avgEntry) !== before) renderChart();" in HTML
+    body = HTML.split("async function loadPortfolio")[1][:900]
+    assert "!== before" in body and "renderChart()" in body, "it repaints unconditionally"
 
 
 # ── live prices in the blotter ──────────────────────────────────────────────
@@ -118,3 +119,66 @@ def test_the_portfolio_poll_does_not_fetch_quotes():
     src = open(web.__file__).read()
     portfolio = src.split('def portfolio(')[1].split('@app.get')[0]
     assert "_marks(" not in portfolio
+
+
+# ── the risk / reward box ───────────────────────────────────────────────────
+def test_the_position_tool_exists_and_toggles():
+    assert 'id="rr-toggle"' in HTML and "function toggleRR" in HTML
+    assert "function drawRR" in HTML
+
+
+def test_green_runs_to_the_target_and_red_to_the_stop():
+    body = HTML.split("function drawRR")[1].split("/* ---------- levels to ticket")[0]
+    assert "fill(yE, yT, C.bull" in body
+    assert "fill(yE, yS, C.bear" in body
+
+
+def test_the_entry_line_is_the_break_even():
+    """The two zones meet at the entry, and that meeting point is the level a
+    stop gets trailed to once the trade is working."""
+    body = HTML.split("function drawRR")[1].split("/* ---------- levels to ticket")[0]
+    assert "BREAK EVEN" in body
+    assert "C.entry" in body, "break-even should share the entry marker's colour"
+
+
+def test_the_box_reports_reward_to_risk():
+    body = HTML.split("function drawRR")[1].split("/* ---------- levels to ticket")[0]
+    assert "R:R " in body
+
+
+def test_the_box_labels_both_levels_with_their_distance():
+    body = HTML.split("function drawRR")[1].split("/* ---------- levels to ticket")[0]
+    assert "TARGET " in body and "STOP " in body
+    assert "pct(box.target)" in body and "pct(box.stop)" in body
+
+
+def test_a_live_position_anchors_the_box_to_what_you_paid():
+    """Drawing a held trade from a suggested entry would show a profit that was
+    never made."""
+    body = HTML.split("async function loadRR")[1].split("function drawRR")[0]
+    assert "POSITION.avgEntry" in body and "live:" in body
+
+
+def test_the_box_fits_inside_the_scale():
+    """A target drawn off the canvas hides the one thing the box is for."""
+    body = HTML.split("function drawChart")[1].split("function priceMark")[0]
+    assert "hi=Math.max(hi,RR.target,RR.stop,RR.entry)" in body
+
+
+def test_the_box_sits_to_the_right_of_the_price_action():
+    body = HTML.split("function drawRR")[1].split("/* ---------- levels to ticket")[0]
+    assert "0.62" in body, "the box should annotate ahead, not cover the history"
+
+
+def test_flipping_side_redraws_the_box():
+    """A long box and a short box point opposite ways."""
+    assert "if(RR_ON) loadRR();" in HTML
+
+
+def test_the_toggle_is_remembered():
+    assert "localStorage.setItem('mamba.rr'" in HTML
+    assert "localStorage.getItem('mamba.rr')" in HTML
+
+
+def test_a_new_symbol_drops_the_box():
+    assert "RR = null;" in HTML

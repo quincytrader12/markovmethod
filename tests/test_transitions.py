@@ -8,8 +8,6 @@ even when they were fast. Both are pinned here.
 
 from __future__ import annotations
 
-import time
-
 from fastapi.testclient import TestClient
 
 from markov_hedge_fund_method.config import Mode, Settings
@@ -77,11 +75,29 @@ def test_the_ttl_is_short_enough_to_stay_live():
     assert 10.0 <= _state().INTRADAY_TTL <= 120.0
 
 
-def test_a_warm_view_is_faster_than_a_cold_one():
-    c = _client()
-    t0 = time.perf_counter(); c.get("/api/candles?symbol=SPY&tf=1D"); cold = time.perf_counter() - t0
-    t0 = time.perf_counter(); c.get("/api/candles?symbol=SPY&tf=1D"); warm = time.perf_counter() - t0
-    assert warm < cold
+def test_a_warm_view_does_no_work_at_all():
+    """Originally a wall-clock comparison, which raced: an 80ms cold path and a
+    15ms warm one invert whenever the process is scheduled out mid-measurement,
+    so it failed under load and passed alone. Counting the fetches asks the same
+    question and cannot be lost to a timing slip."""
+    state = _state()
+    calls = {"n": 0}
+    inner = state.intraday_for.__func__
+
+    def counted(self, symbol, tf):
+        if (symbol.upper(), (tf or "1D").upper()) not in self._intraday_cache:
+            calls["n"] += 1
+        return inner(self, symbol, tf)
+
+    type(state).intraday_for = counted
+    try:
+        c = TestClient(create_app(state))
+        c.get("/api/candles?symbol=SPY&tf=1D")
+        assert calls["n"] == 1
+        c.get("/api/candles?symbol=SPY&tf=1D")
+        assert calls["n"] == 1, "the warm view fetched again"
+    finally:
+        type(state).intraday_for = inner
 
 
 # ── the client does not refetch what it has ─────────────────────────────────

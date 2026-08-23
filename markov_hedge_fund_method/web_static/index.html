@@ -478,6 +478,11 @@
   .timing-chip.now{border-color:var(--green); color:var(--green)}
   .timing-chip.fair{border-color:var(--amber); color:var(--amber)}
   .timing-chip.wait{border-color:var(--silver2); color:var(--silver)}
+  .rr-toggle{cursor:pointer; border:1px solid var(--edge); border-radius:3px; padding:2px 8px;
+    margin-left:8px; font-family:var(--mono); font-size:10px; letter-spacing:1px;
+    color:var(--dim); background:#1b1b1c; white-space:nowrap}
+  .rr-toggle:hover{border-color:var(--cyan); color:var(--ink)}
+  .rr-toggle.on{color:var(--bg); background:var(--silver); border-color:var(--silver); font-weight:700}
   /* news */
   /* The centre column belongs to the chart and the headlines. News gets room to
      show three or four items without scrolling; the chart takes everything the
@@ -695,6 +700,8 @@
           </span>
           <span class="tpo-toggle" id="tpo-toggle" onclick="toggleTPO()"
                 title="Market Profile — where price spent its time, not just where it went">▦ TPO</span>
+          <span class="rr-toggle" id="rr-toggle" onclick="toggleRR()"
+                title="Risk/reward — green to the target, red to the stop, break-even between them">⌗ R:R</span>
           <span class="timing-chip" id="timing-chip" onclick="loadTiming()"
                 title="loading entry timing…"></span>
           <span class="zoom-tag" id="zoom-tag" onclick="resetZoom()"
@@ -957,7 +964,7 @@ function selectSymbol(s, addToWatch){
   VIEW = null;                               // a new series starts unzoomed
   META_OVERRIDE=false;                       // a new symbol is a new decision
   PDT_OVERRIDE=false;
-  INTRADAY_CACHE.clear(); TPO_CACHE.clear(); TPO_DATA = null;
+  INTRADAY_CACHE.clear(); TPO_CACHE.clear(); TPO_DATA = null; RR = null;
   loadState(false); loadNews(); loadPortfolio(); refreshMetaSizing(); loadTiming();
   if(TPO_ON) loadTPO();
 }
@@ -1455,6 +1462,11 @@ function drawChart(chart){
   // Entry only stretches the scale when it is near enough that doing so costs
   // little. An entry far outside the window would flatten every candle into a
   // band, so past that distance it is clamped to the edge and marked instead.
+  // The box has to fit, or its target and stop are drawn off the canvas and the
+  // one thing it exists to show — how far each is from here — is unreadable.
+  if(RR_ON && RR){
+    hi=Math.max(hi,RR.target,RR.stop,RR.entry); lo=Math.min(lo,RR.target,RR.stop,RR.entry);
+  }
   const entry = (POSITION && POSITION.avgEntry) ? Number(POSITION.avgEntry) : null;
   const room = ((hi-lo)||1) * 0.35;
   const entryInScale = entry!=null && entry <= hi+room && entry >= lo-room;
@@ -1509,6 +1521,7 @@ function drawChart(chart){
   if(chart.lastPrice!=null){
     priceMark(ctx, w, Y(chart.lastPrice), chart.lastPrice, C.price, {glow:true});
   }
+  if(RR_ON && RR) drawRR(ctx, w, h, Y, RR);
 }
 
 /* A horizontal marker with its value in a tag on the right edge. The tag is the
@@ -1618,6 +1631,7 @@ function buildTicker(st){
 
 /* ---------- order form ---------- */
 function setSide(s){ SIDE=s; $('side-buy').classList.toggle('on',s==='buy'); $('side-sell').classList.toggle('on',s==='sell');
+  if(RR_ON) loadRR();          // a long box and a short box point opposite ways
   const b=$('btn-submit'); b.className='act '+(s==='buy'?'buy':'sell'); }
 function syncOrderFields(){
   const t=$('o-type').value, cls=$('o-class').value;
@@ -1716,7 +1730,7 @@ async function loadPortfolio(){
   // Only redraw when the entry actually moved — the portfolio polls every
   // fifteen seconds and repainting the chart on each tick would undo the
   // zoom-and-pan work for no gain.
-  if((POSITION && POSITION.avgEntry) !== before) renderChart();
+  if((POSITION && POSITION.avgEntry) !== before){ renderChart(); if(RR_ON) loadRR(); }
   const el=$('portfolio');
   BP = (pf.connected && pf.account) ? pf.account.buyingPower : null; renderAfford();
   if(!pf.connected){ el.innerHTML='<div class="muted">no account connected — add one under Accounts</div>'; $('pf-tag').textContent='offline'; return; }
@@ -1865,6 +1879,80 @@ function tpoControls(){
     '<select onchange="setTpoPeriod(this.value)" title="Minutes per letter. Thirty is standard; '+
       'shorter periods give a finer profile on a quiet session.">'+per+'</select>'+
     '</div>';
+}
+
+/* ---------- risk / reward tool ----------
+   The position box: green from entry to the target, red from entry to the stop,
+   with the entry line between them. That middle line is the break-even — the
+   level a stop gets trailed to once the trade is working, and the reason the
+   two boxes meet rather than float apart.
+
+   It draws the trade you are *in* when you hold one, and the trade you would be
+   putting on when you are flat, because the question "where is this headed and
+   what does it cost me if I am wrong" is the same question either way. */
+let RR_ON = false, RR = null;
+
+function toggleRR(){
+  RR_ON = !RR_ON;
+  $('rr-toggle').classList.toggle('on', RR_ON);
+  try{ localStorage.setItem('mamba.rr', RR_ON?'1':'0'); }catch(e){}
+  if(RR_ON) loadRR(); else { RR=null; renderChart(); }
+}
+
+async function loadRR(){
+  if(!RR_ON) return;
+  const side = (POSITION && POSITION.qty < 0) ? 'sell' : (SIDE || 'buy');
+  try{
+    const d = await api('/api/ticket-levels?symbol='+encodeURIComponent(SYMBOL)+
+                        '&side='+encodeURIComponent(side));
+    if(d.limit==null){ RR=null; renderChart(); return; }
+    // A live position anchors the box to what you actually paid; the suggested
+    // levels only ever supply the exits. Drawing a held trade from a proposed
+    // entry would show a profit you never had.
+    const held = POSITION && POSITION.avgEntry ? Number(POSITION.avgEntry) : null;
+    RR = {side: side, entry: held!=null ? held : d.limit,
+          stop: d.stop, target: d.target, rr: d.rr, live: held!=null};
+  }catch(e){ RR=null; }
+  renderChart();
+}
+
+/* The box itself. Kept to the right of the plot so it annotates where price is
+   going without covering where it has been. */
+function drawRR(ctx, w, h, Y, box){
+  const pad = PAD;
+  const x0 = pad.l + (w-pad.l-pad.r) * 0.62, x1 = w - pad.r;
+  const yE = Y(box.entry), yT = Y(box.target), yS = Y(box.stop);
+
+  const fill = (yA, yB, colour, alpha) => {
+    ctx.save(); ctx.globalAlpha = alpha; ctx.fillStyle = colour;
+    ctx.fillRect(x0, Math.min(yA,yB), x1-x0, Math.abs(yB-yA)); ctx.restore();
+  };
+  fill(yE, yT, C.bull, 0.16);
+  fill(yE, yS, C.bear, 0.16);
+
+  ctx.save();
+  ctx.lineWidth = 1; ctx.font = '9px monospace'; ctx.textBaseline = 'middle';
+  for(const [y, colour] of [[yT, C.bull], [yS, C.bear]]){
+    ctx.strokeStyle = colour; ctx.globalAlpha = 0.9;
+    ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+  }
+  // The break-even, drawn in the same neon grey as the entry marker because it
+  // is the same price wearing its other name.
+  ctx.globalAlpha = 1; ctx.strokeStyle = C.entry; ctx.setLineDash([3,3]);
+  ctx.beginPath(); ctx.moveTo(x0, yE); ctx.lineTo(x1, yE); ctx.stroke();
+  ctx.setLineDash([]);
+
+  const pct = v => ((v - box.entry) / box.entry * 100);
+  const label = (y, text, colour, above) => {
+    ctx.fillStyle = colour; ctx.globalAlpha = 1;
+    ctx.fillText(text, x0 + 5, y + (above ? -6 : 8));
+  };
+  label(yT, 'TARGET '+fmt(box.target,2)+'  '+(pct(box.target)>=0?'+':'')+pct(box.target).toFixed(2)+'%',
+        C.bull, true);
+  label(yS, 'STOP '+fmt(box.stop,2)+'  '+pct(box.stop).toFixed(2)+'%', C.bear, false);
+  label(yE, (box.live?'ENTRY ':'BREAK EVEN ')+fmt(box.entry,2)+
+            (box.rr!=null?'   R:R '+box.rr.toFixed(2)+':1':''), C.entry, true);
+  ctx.restore();
 }
 
 /* ---------- levels to ticket ----------
@@ -2973,7 +3061,9 @@ async function boot(){
   updateNotifyBtn();
   pollAlerts();
   await syncWatchlist();          // restore the stored list, then keep it in step
-  loadTiming(); loadDayTrades();
+  try{ RR_ON = localStorage.getItem('mamba.rr')==='1'; }catch(e){}
+  $('rr-toggle').classList.toggle('on', RR_ON);
+  loadTiming(); loadDayTrades(); loadRR();
   setInterval(()=>{ loadState(true); loadPortfolio(); }, 15000);
   setInterval(loadDayTrades, 60000);
   setInterval(loadTiming, 60000);
