@@ -38,16 +38,26 @@ import threading
 import time
 
 CHUNK = 240              # symbols per fetch cycle — sized for the batch endpoint
-SLICE = 8                # symbols scored between two checks on the user
+SLICE = 3                # symbols scored between two checks on the user
 PAUSE = 2.0              # seconds between chunks, so the API and UI both breathe
 KEEP = 300               # leaderboard size — plenty for any filter downstream
-WORKERS = 2              # scoring threads; deliberately modest
+WORKERS = 1              # scoring threads; deliberately modest
+
+# SLICE and WORKERS together decide how long a click can be left waiting, because
+# scoring is CPU-bound pandas and every worker is another thread holding the
+# interpreter. Both were originally set for sweep throughput and cost roughly
+# four times the page's response time under load. The sweep has all day; the
+# person using it does not.
 
 # How long the user must be quiet before the sweep will do any work, and how
 # long it waits before asking again. Measured, not guessed: scoring on four
 # threads with no yielding took a page load from 3.7ms to 172ms — a 46x
 # regression, and exactly the stutter this whole design exists to avoid.
-IDLE_BEFORE_WORK = 1.5
+# A second and a half was far too eager. Someone clicking through the terminal
+# every few seconds got that much quiet per click and then had the machine taken
+# back mid-thought. Now that activity means genuine input rather than any
+# request at all, this can be long enough to actually mean something.
+IDLE_BEFORE_WORK = 6.0
 IDLE_POLL = 0.25
 
 # Names that are tradable but are not companies. Alpaca's asset list carries

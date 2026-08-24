@@ -205,11 +205,27 @@ def test_status_polling_does_not_count_as_user_activity():
     assert state.idle_for() > 1.0, "a status poll suppressed the sweep"
 
 
-def test_a_real_request_does_count_as_activity():
+def test_a_request_alone_is_no_longer_taken_for_a_person():
+    """This used to assert the opposite, and that was the bug.
+
+    /api/state is a fifteen-second heartbeat. Treating it as interaction meant
+    the terminal thought someone was busy in bursts and absent between them —
+    so the sweep took the CPU back a second and a half after every click, which
+    is exactly when it was least wanted. Traffic cannot tell you whether a
+    person is there; only their input can.
+    """
     state = _state()
     client = TestClient(create_app(state))
     state.last_activity = time.monotonic() - 600
     client.get("/api/state", params={"symbol": "SPY"})
+    assert state.idle_for() > 1.0
+
+
+def test_the_page_beacon_is_what_counts():
+    state = _state()
+    client = TestClient(create_app(state))
+    state.last_activity = time.monotonic() - 600
+    client.post("/api/active")
     assert state.idle_for() < 1.0
 
 

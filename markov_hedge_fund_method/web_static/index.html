@@ -858,6 +858,28 @@ async function api(path, opts){
   return r.status === 204 ? null : r.json();
 }
 
+/* ---------- telling the server the user is here ----------
+   The sweep is the lowest-priority thing in the process and stands aside
+   whenever the terminal is being used. It decided that from how recently a
+   request arrived, which was wrong in both directions: the page's own
+   heartbeats made it look busy in bursts, and a person reading the screen
+   without clicking looked idle. Real input events are the actual signal, and
+   they cost one 204 every couple of seconds at most. */
+let LAST_ACTIVE_PING = 0;
+function pingActive(){
+  const now = Date.now();
+  if(now - LAST_ACTIVE_PING < 2000) return;   // at most one ping per 2s
+  LAST_ACTIVE_PING = now;
+  fetch('/api/active', {method:'POST', keepalive:true}).catch(()=>{});
+}
+for(const ev of ['pointerdown','keydown','wheel']){
+  window.addEventListener(ev, pingActive, {passive:true, capture:true});
+}
+// A hidden tab is nobody using anything, so the sweep may have the machine.
+document.addEventListener('visibilitychange', ()=>{
+  if(!document.hidden) pingActive();
+});
+
 /* ---------- clock ---------- */
 setInterval(()=>{ $('clock').textContent = new Date().toLocaleTimeString('en-GB'); }, 1000);
 

@@ -768,6 +768,19 @@ def create_app(state: AppState):
 
     app = FastAPI(title="Mamba Terminal", docs_url=None, redoc_url=None)
 
+    # Requests only a person can cause. Everything else on a timer is the page
+    # talking to itself.
+    _USER_ACTIONS = frozenset({
+        "/api/active", "/api/orders", "/api/orders/cancel", "/api/orders/cancel_all",
+        "/api/positions/close", "/api/scan", "/api/heatmap", "/api/tpo",
+        "/api/ticket-levels", "/api/blotter", "/api/journal", "/api/kill",
+    })
+
+    @app.post("/api/active", status_code=204)
+    def mark_active():
+        """The page's beacon: a real click, key or scroll just happened."""
+        state.note_activity()
+
     @app.middleware("http")
     async def _track_activity(request: Request, call_next):
         """Record that the user is here, so the sweep can get out of the way.
@@ -777,8 +790,12 @@ def create_app(state: AppState):
         terminal permanently believed the user was busy and the sweep would
         never run at all.
         """
-        path = request.url.path
-        if not path.startswith(("/api/sweep", "/api/health", "/api/alerts")):
+        # Only the page's explicit "someone is here" beacon counts, plus the
+        # handful of requests a person can only cause by acting. Timer polls do
+        # not: counting them made the terminal believe the user was busy in
+        # bursts and idle the rest of the time, which is neither of the two
+        # things the sweep needed to know.
+        if request.url.path in _USER_ACTIONS or request.headers.get("x-user-action"):
             state.note_activity()
         return await call_next(request)
 
