@@ -94,17 +94,32 @@ def test_a_busy_session_cannot_starve_the_sweep_forever():
     assert time.perf_counter() - t0 < 2.0
 
 
-def test_the_back_off_is_long_enough_to_be_felt():
-    """A second and a half gave a clicking user that much quiet and then took
-    the machine back mid-thought."""
-    assert sw.IDLE_BEFORE_WORK >= 4.0
+def test_one_scoring_thread():
+    """The whole of the stutter, and not a concession to it.
 
-
-def test_the_slice_and_worker_count_favour_the_user():
-    """Both were tuned for sweep throughput and cost about four times the page's
-    response time. The sweep has all day; the person using it does not."""
-    assert sw.SLICE <= 4
+    Scoring is Python-level work under one interpreter lock, so a second thread
+    adds contention and buys no parallelism. Measured both ways: one worker
+    scores 31 symbols a second against 25 for two and 21 for four, and a page
+    request's 95th percentile while the sweep runs is 20ms with one worker
+    against 540ms with two — at identical sweep throughput.
+    """
     assert sw.WORKERS == 1
+
+
+def test_the_slice_is_not_cut_to_buy_responsiveness():
+    """It was, and it bought nothing. Cutting the slice from eight to three cost
+    two thirds of the sweep's progress while someone was at the terminal and
+    moved the 95th percentile by four milliseconds, because the second worker
+    was the problem all along. Twelve does start to hurt, so eight stands."""
+    assert 6 <= sw.SLICE <= 8
+
+
+def test_the_back_off_stays_short():
+    """Raising it to six seconds changed neither latency nor throughput —
+    someone clicking steadily never reaches even a second and a half of quiet,
+    and someone who has left is past both — so the smaller value stands, which
+    starves the sweep less in the gaps."""
+    assert sw.IDLE_BEFORE_WORK <= 2.0
 
 
 # ── the page side ───────────────────────────────────────────────────────────

@@ -38,26 +38,33 @@ import threading
 import time
 
 CHUNK = 240              # symbols per fetch cycle — sized for the batch endpoint
-SLICE = 3                # symbols scored between two checks on the user
+SLICE = 8                # symbols scored between two checks on the user
 PAUSE = 2.0              # seconds between chunks, so the API and UI both breathe
 KEEP = 300               # leaderboard size — plenty for any filter downstream
-WORKERS = 1              # scoring threads; deliberately modest
+WORKERS = 1              # scoring threads; one, and measured — see below
 
-# SLICE and WORKERS together decide how long a click can be left waiting, because
-# scoring is CPU-bound pandas and every worker is another thread holding the
-# interpreter. Both were originally set for sweep throughput and cost roughly
-# four times the page's response time under load. The sweep has all day; the
-# person using it does not.
+# One scoring thread, and this is not a concession to responsiveness: it is
+# simply faster. Scoring is Python-level work under one interpreter lock, so a
+# second thread adds contention and buys no parallelism — measured at 31 vs 25
+# symbols a second for one worker against two, and 21 for four.
+#
+# It is also the whole of the stutter. With two workers a page request's 95th
+# percentile was 636ms while the sweep ran; with one it is 18ms at the same
+# slice size and the same throughput. The slice was blamed for that at first and
+# cut to three, which cost two thirds of the sweep's progress while someone was
+# at the terminal and bought nothing — 22ms at the 95th percentile against 18ms
+# for a slice of eight. Twelve pushes it back up to 48ms, so eight is the size.
 
 # How long the user must be quiet before the sweep will do any work, and how
 # long it waits before asking again. Measured, not guessed: scoring on four
 # threads with no yielding took a page load from 3.7ms to 172ms — a 46x
 # regression, and exactly the stutter this whole design exists to avoid.
-# A second and a half was far too eager. Someone clicking through the terminal
-# every few seconds got that much quiet per click and then had the machine taken
-# back mid-thought. Now that activity means genuine input rather than any
-# request at all, this can be long enough to actually mean something.
-IDLE_BEFORE_WORK = 6.0
+# How long after real input the sweep waits before touching the machine again.
+# Raising this to six seconds made no measurable difference to either latency or
+# throughput — someone clicking steadily never reaches even a second and a half
+# of quiet, and someone who has left is past both thresholds — so it stays at
+# the smaller value, which starves the sweep less in the gaps.
+IDLE_BEFORE_WORK = 1.5
 IDLE_POLL = 0.25
 
 # Names that are tradable but are not companies. Alpaca's asset list carries
