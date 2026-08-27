@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from markov_hedge_fund_method.config import Mode, Settings
+from markov_hedge_fund_method import tpo
 from markov_hedge_fund_method.tpo import (
     build_profile,
     open_type,
@@ -302,3 +303,122 @@ def test_two_real_bulges_still_read_as_a_double_distribution():
     lows = [100, 100, 100, 109, 109, 109]
     p = build_profile(session(highs, lows), rows=40)
     assert p["shape"] == "double distribution"
+
+
+# ── one profile per session, which is what a TPO chart is ───────────────────
+def multiday(days=4, per_day=13, start="2026-08-24"):
+    """Bars across several sessions, each day a different price area, so a
+    merged profile and a per-session one cannot look the same."""
+    frames = []
+    for d in range(days):
+        base = 100 + d * 4
+        idx = pd.date_range(f"{start} 09:30", periods=per_day, freq="30min") + pd.Timedelta(days=d)
+        hi = [base + 1 + (i % 3) * 0.5 for i in range(per_day)]
+        lo = [base - 1 - (i % 3) * 0.5 for i in range(per_day)]
+        frames.append(pd.DataFrame({"Open": lo, "High": hi, "Low": lo, "Close": hi}, index=idx))
+    return pd.concat(frames)
+
+
+def test_a_month_is_not_one_blended_shape():
+    """The complaint that started this: every session merged into a single
+    distribution, so a month looked exactly like a day."""
+    d = tpo.build_sessions(multiday(4))
+    assert len(d["sessions"]) == 4
+
+
+def test_each_session_letters_from_the_start():
+    """A real profile restarts at A every day. Running one alphabet across a
+    month exhausts it and silently merges distinct periods."""
+    for s in tpo.build_sessions(multiday(4))["sessions"]:
+        assert s["letters"][0] == "A"
+
+
+def test_each_session_has_its_own_levels():
+    sessions = tpo.build_sessions(multiday(4))["sessions"]
+    pocs = [s["poc"] for s in sessions]
+    assert len(set(pocs)) > 1, "every session reported the same point of control"
+
+
+def test_every_session_shares_one_price_grid():
+    """Without it a given height means a different price in each column, which
+    defeats the entire side-by-side layout."""
+    sessions = tpo.build_sessions(multiday(4))["sessions"]
+    grids = [tuple(r["price"] for r in s["rows"]) for s in sessions]
+    assert all(g == grids[0] for g in grids)
+
+
+def test_the_point_of_control_line_tracks_value():
+    """Rising points of control are acceptance moving up, whatever any one
+    day's candle did."""
+    line = tpo.build_sessions(multiday(4))["pocLine"]
+    assert len(line) == 4
+    assert line[-1]["poc"] > line[0]["poc"]
+
+
+def test_the_composite_is_still_available():
+    d = tpo.build_sessions(multiday(4))
+    assert d["composite"]["poc"] is not None
+
+
+def test_too_many_sessions_are_trimmed_to_the_recent_ones():
+    d = tpo.build_sessions(multiday(60), max_sessions=10)
+    assert len(d["sessions"]) == 10
+    assert d["truncated"] == 50 and d["requested"] == 60
+    assert d["sessions"][-1]["date"] > d["sessions"][0]["date"]
+
+
+def test_a_single_session_still_works():
+    d = tpo.build_sessions(multiday(1))
+    assert len(d["sessions"]) == 1
+
+
+def test_no_bars_gives_no_sessions():
+    d = tpo.build_sessions(pd.DataFrame())
+    assert d["sessions"] == [] and d["composite"]["poc"] is None
+
+
+def test_running_past_the_alphabet_does_not_repeat_a_letter():
+    """A run of identical letters merges distinct periods, and the result still
+    looks like a profile."""
+    p = build_profile(session([100 + i * 0.1 for i in range(60)],
+                              [99 + i * 0.1 for i in range(60)]), rows=40)
+    assert len(set(p["letters"])) == len(p["letters"])
+
+
+# ── the API and the page ────────────────────────────────────────────────────
+def test_the_endpoint_returns_sessions():
+    d = _client().get("/api/tpo", params={"symbol": "SPY", "tf": "1W"}).json()
+    assert len(d["sessions"]) > 1
+    assert d["pocLine"] and all("poc" in x for x in d["pocLine"])
+
+
+def test_the_page_draws_a_column_per_session():
+    html = _client().get("/").text
+    assert "function renderTPOSessions" in html
+    assert ".tpo-sgrid" in html and ".tpo-scell" in html
+
+
+def test_the_rows_cannot_wrap():
+    """A wrapped cell is taller than its neighbours, and one taller row breaks
+    the shared price grid the layout exists to provide."""
+    html = _client().get("/").text
+    assert "flex-wrap:nowrap" in html
+
+
+def test_narrow_columns_become_bars_rather_than_clipping():
+    """Clipping would drop TPOs silently; a bar is the same distribution at a
+    lower resolution rather than a partial one."""
+    html = _client().get("/").text
+    assert "const asBars = ss.length > 12" in html
+
+
+def test_the_composite_remains_reachable_from_the_page():
+    html = _client().get("/").text
+    assert "setTpoView" in html and "composite" in html
+
+
+def test_a_broken_session_layout_falls_back_to_the_composite():
+    """Never leave the chart blank over a layout problem."""
+    html = _client().get("/").text
+    body = html.split("function renderTPO(")[1][:700]
+    assert "catch(e)" in body and "showing the composite" in body

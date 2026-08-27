@@ -289,6 +289,29 @@
     font-family:var(--mono); font-size:9.5px; letter-spacing:.5px; padding:3px 6px;
     border-radius:3px; cursor:pointer}
   .tpo-ctl select:hover{border-color:var(--cyan)}
+  /* one column per session, on a shared price grid */
+  .tpo-sgrid{font-family:var(--mono); font-size:9px; line-height:1.25}
+  .tpo-srow{display:grid; grid-template-columns:52px repeat(var(--cols),minmax(28px,1fr));
+    align-items:stretch; border-bottom:1px solid rgba(255,255,255,.03)}
+  .tpo-srow .px{color:var(--dim2); font-size:9px; text-align:right; padding-right:6px;
+    white-space:nowrap}
+  .tpo-srow.head{border-bottom:1px solid var(--edge); margin-bottom:2px}
+  .tpo-srow.head .tpo-scell{color:var(--silver2); letter-spacing:1px; font-size:9px;
+    text-align:center; padding:2px 0; justify-content:center}
+  /* No wrapping. A wrapped cell is taller than its neighbours, and the moment
+     one row is taller than the others the shared price grid stops lining up —
+     which is the one thing the side-by-side layout exists to provide. */
+  .tpo-scell{display:flex; flex-wrap:nowrap; overflow:hidden; gap:1px; padding:0 2px;
+    border-left:1px solid rgba(255,255,255,.05); height:11px; align-items:center}
+  .tpo-scell b{display:block; height:7px; border-radius:1px; min-width:1px}
+  .tpo-scell i{font-style:normal; color:#0f1011; padding:0 1px; border-radius:1px;
+    font-size:8px; line-height:1.35}
+  .tpo-scell.inva{background:rgba(255,255,255,.035)}
+  .tpo-scell.poc{background:rgba(255,197,31,.16); box-shadow:inset 2px 0 0 #ffc51f}   /* the same gold as the price line */
+  .tpo-scell.vah{box-shadow:inset 0 1px 0 var(--cyan)}
+  .tpo-scell.val{box-shadow:inset 0 -1px 0 var(--cyan)}
+  .tpo-legend b.up{color:var(--green)} .tpo-legend b.down{color:var(--red)}
+  .tpo-legend b.sideways{color:var(--sideways)}
   .tpo-legend{display:flex; gap:14px; flex-wrap:wrap; padding:9px 4px 2px; color:var(--dim);
     font-size:9.5px; letter-spacing:.5px; align-items:center}
   .tpo-legend b{color:var(--ink); font-family:var(--mono)}
@@ -1952,7 +1975,12 @@ function tpoControls(){
     Math.round(v*100)+'% value area</option>').join('');
   const per = [5, 15, 30, 60].map(v =>
     '<option value="'+v+'"'+(v===TPO_PERIOD?' selected':'')+'>'+v+'-min periods</option>').join('');
-  return '<div class="tpo-ctl">'+
+  const view = (TPO_DATA && (TPO_DATA.sessions||[]).length > 1)
+    ? '<select onchange="setTpoView(this.value)" title="A profile per session is what a TPO chart is. The composite merges them into one shape, which answers a narrower question.">'+
+      '<option value="sessions"'+(TPO_VIEW==='sessions'?' selected':'')+'>per session</option>'+
+      '<option value="composite"'+(TPO_VIEW==='composite'?' selected':'')+'>composite</option></select>'
+    : '';
+  return '<div class="tpo-ctl">'+view+
     '<select onchange="setTpoValue(this.value)" title="How much of the session\'s time counts as value. '+
       '70% is the convention — one standard deviation, rounded.">'+va+'</select>'+
     '<select onchange="setTpoPeriod(this.value)" title="Minutes per letter. Thirty is standard; '+
@@ -2181,8 +2209,108 @@ function tpoColour(i, n){
   return 'hsl(' + Math.round(4 + t * 268) + ',85%,58%)';
 }
 
+function renderTPOSessions(wrap, d){
+  const ss = d.sessions || [];
+  const grid = ss[0].rows || [];
+  if(!grid.length) throw new Error('no rows');
+
+  // Every session was built on one shared price grid, so a given height means
+  // the same price in every column. Without that the layout would be unreadable.
+  const perSession = ss.map(s => {
+    const byPrice = {};
+    (s.rows || []).forEach(r => { byPrice[r.price] = r; });
+    const idxOf = {};
+    (s.letters || []).forEach((l, i) => { idxOf[l] = i; });
+    return {s, byPrice, idxOf, n: (s.letters || []).length || 1};
+  });
+
+  // Letters below this many sessions, bars above it.
+  const asBars = ss.length > 12;
+  let maxCount = 1;
+  for(const ps of perSession){
+    for(const r of (ps.s.rows || [])) if(r.count > maxCount) maxCount = r.count;
+  }
+
+  let h = tpoControls();
+  h += '<div class="tpo-head">'+ss.length+' sessions · '+
+       (asBars ? 'shown as bars — too many sessions for letters'
+               : 'each lettered from A')+', '+
+       'each with its own point of control'+
+       (d.sessionsTruncated ? ' · showing the most recent '+ss.length+' of '+
+          d.sessionsRequested : '')+
+       (d.real ? '' : ' · <span class="tpo-warn">placeholder bars</span>')+'</div>';
+
+  h += '<div class="tpo-sgrid" style="--cols:'+ss.length+'">';
+  h += '<div class="tpo-srow head"><span class="px"></span>'+
+       ss.map(x => '<span class="tpo-scell">'+esc(x.date.slice(5))+'</span>').join('')+
+       '</div>';
+
+  for(let i = grid.length - 1; i >= 0; i--){          // highest price at the top
+    const price = grid[i].price;
+    let cells = '';
+    for(const ps of perSession){
+      const r = ps.byPrice[price];
+      const cls = ['tpo-scell'];
+      if(r){
+        if(price === ps.s.poc) cls.push('poc');
+        else if(price === ps.s.vah) cls.push('vah');
+        else if(price === ps.s.val) cls.push('val');
+        else if(ps.s.val != null && price > ps.s.val && price < ps.s.vah) cls.push('inva');
+      }
+      // Letters need room. Past a dozen sessions the columns are too narrow to
+      // hold them, and clipping would drop TPOs silently — so the cell becomes
+      // a bar whose length is the count, which is the same distribution drawn
+      // at a lower resolution rather than a partial one.
+      let inner = '';
+      if(r && r.letters){
+        if(asBars){
+          const w = Math.min(100, (r.count / maxCount) * 100);
+          const mid = ps.idxOf[r.letters[Math.floor(r.letters.length/2)]] ?? 0;
+          inner = '<b style="width:'+w.toFixed(1)+'%;background:'+
+                  tpoColour(mid, ps.n)+'" title="'+r.count+' TPOs at '+fmt(price,2)+'"></b>';
+        }else{
+          inner = r.letters.split('').map(ch =>
+            '<i style="background:'+tpoColour(ps.idxOf[ch] ?? 0, ps.n)+'">'+esc(ch)+'</i>').join('');
+        }
+      }
+      cells += '<span class="'+cls.join(' ')+'">'+inner+'</span>';
+    }
+    h += '<div class="tpo-srow"><span class="px">'+fmt(price,2)+'</span>'+cells+'</div>';
+  }
+  h += '</div>';
+
+  // The line a profile reader actually follows. A rising point of control is
+  // acceptance moving up, whatever any one day's candle did.
+  const pocs = (d.pocLine || []).filter(x => x.poc != null);
+  if(pocs.length > 1){
+    const first = pocs[0].poc, last = pocs[pocs.length-1].poc;
+    const dir = last > first ? 'up' : last < first ? 'down' : 'sideways';
+    h += '<div class="tpo-legend"><span>Value migrated <b class="'+dir+'">'+dir+
+      '</b> over '+pocs.length+' sessions: '+
+      pocs.map(x=>fmt(x.poc,2)).join(' → ')+'</span></div>';
+  }
+  wrap.innerHTML = h;
+}
+
+/* A market profile is a row of daily distributions, each restarting its
+   lettering at A, laid out left to right — not one blended shape. Watching
+   value migrate from one session to the next is the entire point, and a merged
+   month cannot show it. The composite is still available behind the toggle,
+   because it answers a different and narrower question. */
+let TPO_VIEW = 'sessions';
+function setTpoView(v){ TPO_VIEW = v; renderTPO(); }
+
 function renderTPO(){
   const wrap = $('tpo-wrap'), d = TPO_DATA; if(!wrap || !d) return;
+  const multi = (d.sessions || []).length > 1;
+  if(multi && TPO_VIEW === 'sessions'){
+    try{ return renderTPOSessions(wrap, d); }
+    catch(e){
+      // Never leave the chart blank over a layout problem: the composite is
+      // always available and always correct, just less useful.
+      log('session profiles failed, showing the composite: '+e.message, 'warn');
+    }
+  }
   const p = d.profile || {};
   if(!p.rows || !p.rows.length){
     wrap.innerHTML = '<div class="tpo-head tpo-warn">No intraday bars for '+esc(d.symbol)+

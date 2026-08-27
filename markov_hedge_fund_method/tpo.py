@@ -80,7 +80,9 @@ def _period_key(index: pd.DatetimeIndex, minutes: int) -> pd.DatetimeIndex:
 
 
 def build_profile(ohlc: pd.DataFrame, *, period_minutes: int = DEFAULT_PERIOD_MIN,
-                  rows: int = DEFAULT_ROWS, value_pct: float = VALUE_AREA_PCT) -> dict:
+                  rows: int = DEFAULT_ROWS, value_pct: float = VALUE_AREA_PCT,
+                  tick: float | None = None, base_low: float | None = None,
+                  base_high: float | None = None) -> dict:
     """Turn intraday bars into a market profile.
 
     Bars finer than the period are grouped into periods; each period marks every
@@ -105,7 +107,14 @@ def build_profile(ohlc: pd.DataFrame, *, period_minutes: int = DEFAULT_PERIOD_MI
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
         hi = lo + max(abs(lo) * 0.001, 0.01)
 
-    tick = tick_size(lo, hi, rows)
+    # A caller drawing several sessions side by side passes one grid for all of
+    # them. Without that each column would size its own rows, so a given height
+    # would mean a different price in every column and the layout would be
+    # unreadable — which is the entire reason to lay them out together.
+    if base_low is not None and base_high is not None and base_high > base_low:
+        lo, hi = float(base_low), float(base_high)
+    if tick is None or not np.isfinite(tick) or tick <= 0:
+        tick = tick_size(lo, hi, rows)
     base = np.floor(lo / tick) * tick
     n_rows = int(np.ceil((hi - base) / tick)) + 1
     n_rows = max(1, min(n_rows, 400))          # a profile is read, not scrolled
@@ -118,7 +127,12 @@ def build_profile(ohlc: pd.DataFrame, *, period_minutes: int = DEFAULT_PERIOD_MI
     ib_hi = ib_lo = None
 
     for i, (_, chunk) in enumerate(groups):
-        letter = LETTERS[i] if i < len(LETTERS) else LETTERS[-1]
+        # Past the alphabet the letters wrap with a prime rather than repeating
+        # the last one. Fifty-two half-hours is more than any real session, so
+        # this only fires on a misuse — but a run of identical letters silently
+        # merges distinct periods, which is the kind of wrong that still looks
+        # like a profile.
+        letter = LETTERS[i] if i < len(LETTERS) else LETTERS[i % len(LETTERS)] + "'"
         letters_used.append(letter)
         p_hi, p_lo = float(chunk["High"].max()), float(chunk["Low"].min())
         top = int(np.floor((p_hi - base) / tick))
@@ -320,3 +334,79 @@ def summarise(profile: dict) -> str:
                "both": "extended both sides of the opening hour"}[ext]
     return (f"Fairest price {poc:g}, value {val:g}–{vah:g}. "
             f"Closed {where}; {ext_txt}. Shape: {shape}.")
+
+
+# ── one profile per session, which is what a TPO chart actually is ──────────
+# A real market profile is a row of daily distributions, each restarting its
+# lettering at A, laid out left to right. Merging a month into one shape is not
+# a coarser version of that — it is a different and much less useful object,
+# because the whole point is watching value migrate from one day to the next.
+MAX_SESSIONS = 40          # beyond this the columns are too narrow to read
+
+
+def session_keys(index: pd.DatetimeIndex) -> np.ndarray:
+    """Which trading day each bar belongs to."""
+    return pd.DatetimeIndex(index).normalize().to_numpy()
+
+
+def build_sessions(ohlc: pd.DataFrame, *, period_minutes: int = DEFAULT_PERIOD_MIN,
+                   rows: int = DEFAULT_ROWS, value_pct: float = VALUE_AREA_PCT,
+                   max_sessions: int = MAX_SESSIONS) -> dict:
+    """A profile per trading day, plus the composite over all of them.
+
+    Each day is built independently, so its letters start at A and its point of
+    control and value area describe that day alone. The composite is the merged
+    shape — still worth having, but as one column beside the others rather than
+    as the only thing on screen.
+
+    The most recent sessions are kept when there are more than will fit. A
+    profile is read, and forty narrow columns is already past the point where
+    another one adds anything.
+    """
+    out = {"sessions": [], "composite": build_profile(
+        ohlc, period_minutes=period_minutes, rows=rows, value_pct=value_pct),
+        "truncated": 0, "requested": 0}
+    if ohlc is None or ohlc.empty or not {"High", "Low", "Close"} <= set(ohlc.columns):
+        return out
+
+    df = ohlc.dropna(subset=["High", "Low", "Close"]).copy()
+    if df.empty:
+        return out
+    df.index = pd.to_datetime(df.index)
+
+    keys = session_keys(df.index)
+    unique = list(pd.unique(keys))
+    out["requested"] = len(unique)
+    if len(unique) > max_sessions:
+        out["truncated"] = len(unique) - max_sessions
+        unique = unique[-max_sessions:]
+
+    # Every session is measured on the same price grid, or the columns cannot be
+    # read against each other — a row at one height would mean a different price
+    # in each column, which defeats the entire layout.
+    lo = float(df["Low"].min())
+    hi = float(df["High"].max())
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        hi = lo + max(abs(lo) * 0.001, 0.01)
+    tick = tick_size(lo, hi, rows)
+
+    sessions = []
+    for key in unique:
+        part = df[keys == key]
+        if part.empty:
+            continue
+        prof = build_profile(part, period_minutes=period_minutes, rows=rows,
+                             value_pct=value_pct, tick=tick, base_low=lo,
+                             base_high=hi)
+        prof["date"] = str(pd.Timestamp(key).date())
+        sessions.append(prof)
+
+    out["sessions"] = sessions
+    out["tickSize"] = tick
+    out["gridLow"] = lo
+    out["gridHigh"] = hi
+    # The line a profile reader actually follows: where value sat each day.
+    # Rising points of control are acceptance moving up, whatever any single
+    # day's candle did.
+    out["pocLine"] = [{"date": s["date"], "poc": s["poc"]} for s in sessions]
+    return out

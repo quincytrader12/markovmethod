@@ -1369,7 +1369,7 @@ def create_app(state: AppState):
 
     @app.get("/api/tpo")
     def tpo_endpoint(symbol: str = "SPY", tf: str = "1D", rows: int = 48,
-                     period: int = 30, value: float = 0.70):
+                     period: int = 30, value: float = 0.70, sessions: int = 1):
         """Market Profile for one session.
 
         A profile is only worth reading if the bars underneath it are real, and
@@ -1389,10 +1389,23 @@ def create_app(state: AppState):
                                 rows=max(12, min(int(rows), 120)),
                                 value_pct=max(0.30, min(float(value), 0.95)))
         real = not str(source).startswith("synthetic")
+        # A market profile is a row of daily distributions, not one blended
+        # shape. The composite still travels with them — it is worth having as
+        # one column beside the others rather than as the only thing on screen.
+        split = None
+        if sessions:
+            from .tpo import build_sessions
+            split = build_sessions(df, period_minutes=max(5, min(int(period), 120)),
+                                   rows=max(12, min(int(rows), 120)),
+                                   value_pct=max(0.30, min(float(value), 0.95)))
         return {
             "symbol": symbol, "tf": (tf or "1D").upper(),
             "dataSource": source, "real": real,
             "profile": profile,
+            "sessions": (split or {}).get("sessions", []),
+            "pocLine": (split or {}).get("pocLine", []),
+            "sessionsTruncated": (split or {}).get("truncated", 0),
+            "sessionsRequested": (split or {}).get("requested", 0),
             "openType": open_type(profile) if real else "",
             "summary": (summarise(profile) if real else
                         "Placeholder bars — this profile does not describe the market."),
