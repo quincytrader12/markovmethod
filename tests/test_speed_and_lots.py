@@ -158,5 +158,5 @@ def test_index_has_lots_and_new_timeframes_and_watch_button():
     client, _ = _demo_client()
     html = client.get("/").text
     assert 'id="o-lots"' in html and 'id="o-lotsize"' in html
-    assert 'data-tf="1H"' in html and 'data-tf="4H"' in html
+    assert 'value="1H"' in html and 'value="4H"' in html
     assert "watchFromScan" in html and "/api/quotes" in html

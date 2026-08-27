@@ -127,3 +127,31 @@ def test_the_zoom_chip_hides_at_the_default_view():
     otherwise it is lit on every timeframe short of the longest."""
     fn = re.search(r"function updateZoomTag\(n\)\{(.*?)\n\}", SOURCE, re.S).group(1)
     assert "defaultSpan(n)" in fn, "the chip compares against the full history, not the default"
+
+
+def test_the_timeframe_is_one_control_not_eleven_buttons():
+    """The row of blocks cost most of the chart header's width to show ranges
+    that are only ever chosen one at a time."""
+    assert 'id="tfsel"' in SOURCE
+    assert "tfbar" not in SOURCE, "the old button row is still there"
+
+
+def test_every_range_is_still_offered():
+    for tf in ("15M", "30M", "1H", "4H", "1D", "1W"):
+        assert f'value="{tf}"' in SOURCE, tf
+    for days in ("21", "63", "126", "252", "504"):
+        assert f'value="{days}"' in SOURCE, days
+
+
+def test_intraday_and_daily_ranges_are_grouped():
+    """They behave differently — one draws a profile per session, the other
+    candles — so the list says which is which."""
+    assert 'optgroup label="Intraday"' in SOURCE
+    assert 'optgroup label="Daily"' in SOURCE
+
+
+def test_the_control_follows_a_change_made_in_code():
+    """A selector showing one range while the chart draws another is the kind of
+    wrong that is only noticed after a decision has been made on it."""
+    body = SOURCE.split("function setTF")[1].split("function onTFChange")[0]
+    assert "sel.value = String(v)" in body

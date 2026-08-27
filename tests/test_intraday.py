@@ -480,7 +480,7 @@ def test_the_finer_timeframes_stay_inside_yahoos_history_limit():
 
 def test_the_page_offers_the_new_timeframes():
     html = _client().get("/").text
-    assert 'data-tf="15M"' in html and 'data-tf="30M"' in html
+    assert 'value="15M"' in html and 'value="30M"' in html
 
 
 def test_the_new_timeframes_serve_candles():
