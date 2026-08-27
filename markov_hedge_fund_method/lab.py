@@ -69,12 +69,16 @@ class Trial:
     track: bt.Track
     dsr: float = 0.0
     psr: float = 0.0
+    symbol: str = ""
+    excess: float = 0.0             # Sharpe above buy-and-hold on the same symbol
 
     def row(self) -> dict:
-        d = {"name": self.name, "kind": self.kind, "parts": list(self.parts)}
+        d = {"name": self.name, "kind": self.kind, "parts": list(self.parts),
+             "symbol": self.symbol}
         d.update(self.track.summary())
         d["dsr"] = round(self.dsr, 4)
         d["psr"] = round(self.psr, 4)
+        d["excess"] = round(self.excess, 3)
         d["verdict"] = ss.verdict(self.dsr)
         return d
 
@@ -88,6 +92,7 @@ class LabResult:
     holdout: list = field(default_factory=list)
     searched_bars: int = 0
     holdout_bars: int = 0
+    benchmark_sharpe: float = 0.0   # buy-and-hold on this symbol, same period
     cost_bps: float = bt.DEFAULT_COST_BPS
     ran_at: str = ""
     seconds: float = 0.0
@@ -99,6 +104,7 @@ class LabResult:
             "sharpeVariance": round(self.sharpe_variance, 6),
             "searchedBars": self.searched_bars,
             "holdoutBars": self.holdout_bars,
+            "benchmarkSharpe": round(self.benchmark_sharpe, 3),
             "costBps": self.cost_bps,
             "ranAt": self.ran_at,
             "seconds": round(self.seconds, 1),
@@ -184,7 +190,15 @@ def search(close: pd.Series, *, symbol: str = "", cost_bps: float = bt.DEFAULT_C
     per_obs_all = sharpes / math.sqrt(bt.TRADING_DAYS)   # deannualise the whole set
     variance = float(np.var(per_obs_all, ddof=1)) if n_trials > 1 else 0.0
 
+    # The one alternative that costs nothing to run. A strategy on a name that
+    # rose all year is only interesting if it beat simply owning the name, and a
+    # cross-symbol sweep makes that trap far easier to fall into: the winners
+    # cluster on whatever went up.
+    bench = _score(st.buy_and_hold(), searched, cost_bps)
+    benchmark = bench.sharpe if bench is not None else 0.0
     for t in trials:
+        t.symbol = symbol
+        t.excess = t.track.sharpe - benchmark
         per_obs = ss.deannualize(t.track.sharpe)
         t.psr = ss.probabilistic_sharpe(per_obs, t.track.n_obs,
                                         skew=t.track.skew, kurtosis=t.track.kurtosis)
@@ -201,9 +215,11 @@ def search(close: pd.Series, *, symbol: str = "", cost_bps: float = bt.DEFAULT_C
         h = _score(built[t.name], holdout, cost_bps)
         if h is None:
             continue
-        row = {"name": t.name, "kind": t.kind,
+        row = {"name": t.name, "kind": t.kind, "symbol": symbol,
                "searched": t.track.summary(), "holdout": h.summary(),
-               "dsr": round(t.dsr, 4),
+               "dsr": round(t.dsr, 4), "excess": round(t.excess, 3),
+               "beatBuyAndHold": bool(h.sharpe > (_score(st.buy_and_hold(), holdout,
+                                                         cost_bps) or h).sharpe),
                "heldUp": bool(h.sharpe > 0 and h.sharpe >= 0.5 * t.track.sharpe),
                "decay": round(t.track.sharpe - h.sharpe, 3)}
         holdout_rows.append(row)
@@ -211,6 +227,7 @@ def search(close: pd.Series, *, symbol: str = "", cost_bps: float = bt.DEFAULT_C
     return LabResult(
         symbol=symbol, trials=trials, n_trials=n_trials,
         sharpe_variance=variance, holdout=holdout_rows,
+        benchmark_sharpe=benchmark,
         searched_bars=len(searched), holdout_bars=len(holdout),
         cost_bps=cost_bps, ran_at=time.strftime("%Y-%m-%d %H:%M"),
         seconds=time.time() - started,
@@ -444,3 +461,113 @@ def rebuild(name: str):
         if combiner and a in lib and b in lib:
             return combiner(lib[a], lib[b])
     return None
+
+
+# ── across many symbols ─────────────────────────────────────────────────────
+def pool(results: list) -> dict:
+    """Re-judge every trial against the whole sweep, not against its own symbol.
+
+    This is the correction a cross-symbol search needs and the one it is easiest
+    to skip. Running the lab on fifty names is not fifty searches of a hundred
+    and fifty-four; it is one search of seven thousand seven hundred, and the
+    best result out of it has to clear a far higher bar than the best result out
+    of any one symbol. Reporting the per-symbol deflated Sharpe for a winner
+    chosen across all of them is exactly the mistake the lab exists to prevent,
+    committed one level up.
+    """
+    sharpes: list[float] = []
+    for r in results:
+        sharpes.extend(t.track.sharpe for t in r.trials)
+    n = len(sharpes)
+    if n < 2:
+        return {"nTrials": n, "variance": 0.0, "ranked": []}
+
+    per_obs = np.asarray(sharpes, dtype=float) / math.sqrt(bt.TRADING_DAYS)
+    variance = float(np.var(per_obs, ddof=1))
+
+    ranked = []
+    for r in results:
+        for t in r.trials:
+            dsr = ss.deflated_sharpe(ss.deannualize(t.track.sharpe), t.track.n_obs,
+                                     n, variance, skew=t.track.skew,
+                                     kurtosis=t.track.kurtosis)
+            row = t.row()
+            # Both numbers travel together on purpose: the gap between them is
+            # how much of the per-symbol confidence was an artefact of only
+            # having looked at one symbol.
+            row["symbolDsr"] = row["dsr"]
+            row["dsr"] = round(dsr, 4)
+            row["verdict"] = ss.verdict(dsr)
+            ranked.append(row)
+
+    ranked.sort(key=lambda d: (d["dsr"], d["sharpe"]), reverse=True)
+    return {"nTrials": n, "variance": round(variance, 6), "ranked": ranked,
+            "luckBar": round(ss.expected_max_sharpe(n, variance)
+                             * math.sqrt(bt.TRADING_DAYS), 3)}
+
+
+def breadth(results: list, top: int = 10) -> dict:
+    """How many genuinely different bets are in the top of the ranking?
+
+    A sweep's leaderboard is usually one idea wearing several tickers — momentum
+    on five technology names is a single bet held five times, and it looks like
+    five independent confirmations. Averaging the pairwise correlation of the
+    winners' return streams says how much of the apparent agreement is real.
+    """
+    streams = []
+    for r in results:
+        for t in r.trials[:3]:
+            streams.append((f"{r.symbol}:{t.name}", t.track.returns))
+    if len(streams) < 2:
+        return {"effectiveBets": len(streams), "avgCorrelation": 0.0, "n": len(streams)}
+
+    streams = streams[:max(2, top)]
+    frame = pd.DataFrame({name: s for name, s in streams}).dropna()
+    if frame.shape[0] < 30 or frame.shape[1] < 2:
+        return {"effectiveBets": frame.shape[1], "avgCorrelation": 0.0,
+                "n": frame.shape[1]}
+
+    corr = frame.corr().to_numpy()
+    m = corr.shape[0]
+    off = (corr.sum() - np.trace(corr)) / (m * (m - 1))
+    rho = float(np.clip(off, -0.99, 0.99))
+    # The standard effective-sample-size form. At zero correlation it returns the
+    # count; at one it collapses to a single bet, which is the honest reading of
+    # ten copies of the same trade.
+    eff = m / (1.0 + (m - 1) * max(rho, 0.0))
+    return {"effectiveBets": round(float(eff), 2), "avgCorrelation": round(rho, 3),
+            "n": m,
+            "note": ("The leaderboard is one idea repeated across symbols."
+                     if eff < 2.5 else
+                     "The leaderboard holds several genuinely different bets.")}
+
+
+def sweep_summary(results: list, pooled: dict, spread: dict) -> str:
+    """What a sweep across many symbols actually established."""
+    if not results or not pooled.get("ranked"):
+        return "No symbol produced a usable track record."
+
+    survivors = [h for r in results for h in r.holdout if h.get("heldUp")]
+    beat = [h for h in survivors if h.get("beatBuyAndHold")]
+    best = pooled["ranked"][0]
+    lines = [
+        f"{len(results)} symbols, {pooled['nTrials']} trials in total — one "
+        f"search of that size, not {len(results)} small ones.",
+        f"Top of the pooled ranking: {best['name']} on {best['symbol']}, "
+        f"{best['sharpe']:.2f} after costs. Deflated against the whole sweep it "
+        f"is {best['dsr']:.0%}, against its own symbol alone {best['symbolDsr']:.0%}.",
+        f"A strategy with no edge would be expected to reach about "
+        f"{pooled.get('luckBar', 0):.2f} annualised out of this many attempts.",
+    ]
+    if survivors:
+        lines.append(f"{len(survivors)} candidate(s) survived their holdout, "
+                     f"{len(beat)} of which also beat simply owning the symbol.")
+    else:
+        lines.append("Nothing survived its holdout, which is the usual outcome "
+                     "and the reason the sweep is worth running rather than "
+                     "trusting the leaderboard.")
+    if spread.get("effectiveBets"):
+        lines.append(f"The top names amount to about {spread['effectiveBets']} "
+                     f"independent bet(s) at {spread['avgCorrelation']:.2f} average "
+                     "correlation.")
+    return " ".join(lines)

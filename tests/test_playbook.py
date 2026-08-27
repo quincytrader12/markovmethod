@@ -250,3 +250,24 @@ def test_the_lab_ui_refuses_to_integrate_a_failed_candidate():
     html = c.get("/").text
     assert "REFUSED" in html
     assert "Only a strategy that survived the untouched quarter" in html
+
+
+def test_a_strategy_that_trails_buy_and_hold_is_refused(tmp_path):
+    """The bar a cross-symbol sweep makes unmissable. In one five-symbol run
+    three candidates survived their holdouts and none of them beat owning the
+    stock — clearing the statistics is not the same as being worth trading."""
+    with pytest.raises(playbook.NotProven, match="owning the"):
+        playbook.adopt(str(tmp_path), "SPY", entry(beatBuyAndHold=False))
+
+
+def test_beating_buy_and_hold_is_accepted(tmp_path):
+    row = playbook.adopt(str(tmp_path), "SPY", entry(beatBuyAndHold=True))
+    assert row["strategy"] == "momentum_252"
+
+
+def test_an_older_record_without_the_comparison_still_adopts(tmp_path):
+    """Absent is not the same as failed: results stored before the comparison
+    existed should not be retroactively refused."""
+    e = entry()
+    e.pop("beatBuyAndHold", None)
+    assert playbook.adopt(str(tmp_path), "SPY", e)

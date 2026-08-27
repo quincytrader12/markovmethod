@@ -91,6 +91,9 @@
   .lab-sel:focus{outline:none; border-color:var(--red)}
   .lab-chk{display:inline-flex; align-items:center; gap:5px; font-size:10px; color:var(--dim);
     letter-spacing:1px; white-space:nowrap}
+  .sweep-bar{height:4px; background:#1d1e20; border:1px solid var(--edge); border-radius:3px;
+    overflow:hidden; margin:6px 0 10px}
+  .sweep-bar span{display:block; height:100%; background:var(--red); transition:width .3s}
   .lab-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:9px; margin:8px 0}
   .lab-card{border:1px solid var(--edge); border-radius:4px; padding:9px 11px; background:#1b1b1c}
   .lab-card h5{margin:0 0 6px; font-size:9px; letter-spacing:2px; text-transform:uppercase; color:#c98a91; font-weight:400}
@@ -2566,6 +2569,117 @@ async function renderPlaybook(){
   el.innerHTML = h;
 }
 
+/* ---------- sweeping the whole watchlist ----------
+   The pooling is the point. Running the lab on fifty names is one search of
+   seven thousand five hundred, and a winner chosen across all of them has to
+   clear a far higher bar than the best result from any one. The table shows
+   both deflated Sharpes side by side, and the gap between them is how much of
+   the per-symbol confidence came from only having looked at one symbol. */
+let SWEEP_TIMER = null;
+
+async function toggleLabSweep(){
+  let s;
+  try{ s = await api('/api/lab/sweep'); }catch(e){ return; }
+  if(s.running){
+    await api('/api/lab/sweep/stop', {method:'POST'});
+    log('lab sweep stopped','warn');
+    return pollLabSweep();
+  }
+  try{
+    await api('/api/lab/sweep/start', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({years: parseInt($('lab-years').value,10)||0,
+                            costBps: parseFloat($('lab-cost').value),
+                            holdoutFrac: parseFloat($('lab-holdout').value),
+                            longOnly: $('lab-longonly').checked})});
+    log('lab sweep started across the watchlist','ok');
+  }catch(e){ log('could not start sweep: '+e.message,'err'); return; }
+  pollLabSweep();
+}
+
+function pollLabSweep(){
+  clearInterval(SWEEP_TIMER);
+  const tick = async () => {
+    let s;
+    try{ s = await api('/api/lab/sweep'); }catch(e){ clearInterval(SWEEP_TIMER); return; }
+    renderLabSweep(s);
+    if(!s.running){ clearInterval(SWEEP_TIMER); SWEEP_TIMER=null; }
+  };
+  tick();
+  SWEEP_TIMER = setInterval(tick, 1500);
+}
+
+function renderLabSweep(s){
+  const el = $('lab-body'); if(!el) return;
+  const btn = $('lab-sweep-btn');
+  if(btn) btn.textContent = s.running ? '■ STOP SWEEP' : '⚗ SWEEP WATCHLIST';
+
+  const total = (s.symbols||[]).length || 1;
+  const seen = (s.done||[]).length + (s.skipped||[]).length;
+  let h = '<div class="lab-note">Sweeping <b>'+total+'</b> symbols · '+
+    seen+' looked at · '+(s.done||[]).length+' searched'+
+    (s.running ? ' · running…' : ' · finished in '+s.seconds+'s')+'</div>';
+  h += '<div class="sweep-bar"><span style="width:'+Math.round(seen/total*100)+'%"></span></div>';
+
+  if(s.summary) h += '<div class="lab-note">'+esc(s.summary)+'</div>';
+
+  if((s.survivors||[]).length){
+    h += '<div class="lab-h">Survived a holdout — the only ones worth integrating</div>';
+    h += '<table class="lab"><thead><tr><th>Symbol</th><th>Strategy</th>'+
+         '<th class="num">Holdout</th><th class="num">Pooled DSR</th>'+
+         '<th class="num">Own DSR</th><th>Beat buy &amp; hold</th><th></th></tr></thead><tbody>';
+    for(const r of s.survivors){
+      // Mirror the backend gate exactly. A button that offers to integrate
+      // something the server then refuses is worse than one that explains why.
+      const beat = r.beatBuyAndHold;
+      const dsr = r.pooledDsr==null ? (r.symbolDsr||0) : r.pooledDsr;
+      const okDsr = dsr >= 0.5, okSharpe = (r.holdout.sharpe||0) >= 0.3;
+      const ok = beat && okDsr && okSharpe;
+      const why = !beat ? 'It survived out of sample but trailed simply owning the symbol. Clearing the statistics is not the same as being worth trading.'
+                : !okDsr ? 'Deflated against all '+s.nTrials+' trials in this sweep it is '+(dsr*100).toFixed(0)+'%, below the 50% floor. Found in a search this large, it is likelier than not to be luck.'
+                : 'Out-of-sample Sharpe is below the 0.3 floor.';
+      h += '<tr><td><b>'+esc(r.symbol)+'</b></td><td>'+esc(r.name)+'</td>'+
+        '<td class="num lab-held">'+fmt(r.holdout.sharpe,2)+'</td>'+
+        '<td class="num">'+(r.pooledDsr==null?'—':(r.pooledDsr*100).toFixed(0)+'%')+'</td>'+
+        '<td class="num" style="color:var(--dim)">'+(r.symbolDsr==null?'—':(r.symbolDsr*100).toFixed(0)+'%')+'</td>'+
+        '<td class="'+(beat?'lab-held':'lab-failed')+'">'+(beat?'yes':'no')+'</td>'+
+        '<td class="num"><button class="lab-adopt"'+(ok?'':' disabled title="'+esc(why)+'"')+
+          ' onclick="adoptStrategy(\''+esc(r.symbol)+'\', \''+esc(r.name).replace(/'/g,"\\'")+'\')">'+
+          (ok?'+ INTEGRATE':'REFUSED')+'</button></td></tr>';
+    }
+    h += '</tbody></table>';
+  }else if(!s.running && s.nTrials){
+    h += '<div class="lab-note lab-warn">Nothing survived its holdout. That is the '+
+         'usual outcome across a whole watchlist and the reason the sweep is worth '+
+         'running rather than trusting the leaderboard.</div>';
+  }
+
+  if((s.ranked||[]).length){
+    const b = s.breadth||{};
+    h += '<div class="lab-h">Pooled ranking · '+s.nTrials+' trials across all symbols</div>';
+    h += '<table class="lab"><thead><tr><th>Symbol</th><th>Strategy</th>'+
+         '<th class="num">Sharpe</th><th class="num">vs buy &amp; hold</th>'+
+         '<th class="num">Pooled DSR</th><th class="num">Own DSR</th></tr></thead><tbody>';
+    for(const r of s.ranked.slice(0,20)){
+      h += '<tr><td><b>'+esc(r.symbol)+'</b></td><td>'+esc(r.name)+'</td>'+
+        '<td class="num">'+fmt(r.sharpe,2)+'</td>'+
+        '<td class="num" style="color:'+((r.excess||0)>0?'var(--green)':'var(--red)')+'">'+
+          ((r.excess||0)>=0?'+':'')+fmt(r.excess,2)+'</td>'+
+        '<td class="num">'+(r.dsr*100).toFixed(0)+'%</td>'+
+        '<td class="num" style="color:var(--dim)">'+(r.symbolDsr*100).toFixed(0)+'%</td></tr>';
+    }
+    h += '</tbody></table>';
+    if(b.effectiveBets!=null){
+      h += '<div class="lab-note">The top names amount to about <b>'+b.effectiveBets+
+        '</b> independent bet(s) at '+fmt(b.avgCorrelation,2)+' average correlation. '+
+        esc(b.note||'')+' A leaderboard of one idea across several tickers reads as '+
+        'several confirmations and is one.</div>';
+    }
+  }
+  el.innerHTML = h + '<div id="pb-wrap"></div>';
+  renderPlaybook();
+}
+
 async function toggleForward(symbol, name, on){
   try{
     const r = await api('/api/forward/toggle', {method:'POST',
@@ -3408,6 +3522,8 @@ boot();
         <option value="0.35">35% held out</option></select>
       <label class="lab-chk" title="Shorting a single name costs borrow this engine does not model and can be recalled at the worst moment, so a short-side edge is less tradeable than it looks."><input type="checkbox" id="lab-longonly"> long only</label>
       <button class="btn-x" onclick="runLab()">▶ RUN SEARCH</button>
+      <button class="btn-x" id="lab-sweep-btn" onclick="toggleLabSweep()"
+        title="Search every symbol on the watchlist and judge the results as one search — fifty symbols is one search of seven thousand, not fifty small ones.">⚗ SWEEP WATCHLIST</button>
       <button class="btn-x" onclick="closeLab()">✕ Close</button>
     </div>
     <div class="lab-body" id="lab-body"></div>

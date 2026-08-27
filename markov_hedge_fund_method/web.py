@@ -174,6 +174,8 @@ class AppState:
         # anywhere but a paper account regardless.
         from .forwardtest import ForwardTester
         self.forward = ForwardTester(self)
+        from .labsweep import LabSweep
+        self.labsweep = LabSweep(self)
         # Symbols the user is actually looking at, so the full-market sweep does
         # not evict the history behind their own chart while they use it.
         self.watchlist_hint: list = list(DEFAULT_SYMBOLS)
@@ -1190,6 +1192,38 @@ def create_app(state: AppState):
                           "best": (b.get("holdout") or [{}])[0].get("name", ""),
                           "heldUp": (b.get("holdout") or [{}])[0].get("heldUp", False)}
                          for b in lab.load_all(_lab_dir())]}
+
+    @app.post("/api/lab/sweep/start")
+    async def lab_sweep_start(request: Request):
+        """Search a whole list of symbols and judge the results as one search.
+
+        The symbols default to the watchlist. Whatever the list, every trial is
+        re-deflated against the total across all of them — fifty symbols is one
+        search of seven thousand, not fifty small ones.
+        """
+        data = await request.json() if await request.body() else {}
+        symbols = data.get("symbols") or []
+        if not symbols:
+            symbols = state.watchlist.list() or [state.settings.ticker]
+        if len(symbols) > 60:
+            # Beyond this the trial count deflates every winner into
+            # insignificance anyway, so the extra hours buy nothing.
+            symbols = symbols[:60]
+        return state.labsweep.start(
+            symbols,
+            years=int(data.get("years") or 0),
+            cost_bps=float(data.get("costBps") or 0) or None,
+            holdout_frac=float(data.get("holdoutFrac") or 0) or 0.25,
+            long_only=bool(data.get("longOnly")))
+
+    @app.get("/api/lab/sweep")
+    def lab_sweep_status():
+        return state.labsweep.status()
+
+    @app.post("/api/lab/sweep/stop")
+    def lab_sweep_stop():
+        state.labsweep.stop()
+        return state.labsweep.status()
 
     @app.get("/api/lab/dive")
     def lab_dive(symbol: str = "SPY", strategy: str = "", costBps: float = 0.0):

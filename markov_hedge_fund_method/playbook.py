@@ -88,6 +88,16 @@ def check(entry: dict) -> None:
         raise NotProven(
             f"Deflated Sharpe is {dsr}, below {MIN_DSR}. Given how many "
             "combinations were tried, this one is likelier than not to be luck.")
+    # The bar that a cross-symbol sweep makes unmissable: three candidates
+    # survived their holdouts in one run and not one of them beat simply owning
+    # the symbol. A strategy that clears every statistical test and still trails
+    # buy-and-hold has earned nothing but turnover, and the entry carries the
+    # comparison precisely so this can be checked rather than assumed.
+    if entry.get("beatBuyAndHold") is False:
+        raise NotProven(
+            "It survived out of sample but did not beat simply owning the "
+            "symbol over the same period. Clearing the statistics is not the "
+            "same as being worth trading.")
 
 
 def adopt(config_dir: str, symbol: str, entry: dict) -> dict:
