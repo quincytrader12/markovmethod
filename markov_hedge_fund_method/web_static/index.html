@@ -68,6 +68,57 @@
   .mode-chip.live{border-color:var(--red); box-shadow:0 0 10px rgba(255,77,94,.25)}
   .mode-chip.live select{color:var(--red)}
   .mode-chip.paper select{color:var(--amber)}
+  .mode-chip.backtest{border-color:var(--silver2)}
+  .mode-chip.backtest select{color:var(--silver)}
+  /* the lab — the same grey terminal, accented red instead of cyan. Research
+     and execution should not look alike: a number here is a claim about the
+     past, and one on the main screen is a decision about now. */
+  #lab-modal .modal-box{border-color:#5a2a2f}
+  #lab-modal .modal-head{flex-wrap:wrap; gap:6px; align-items:center}
+  #lab-modal h3{color:var(--red)}
+  #lab-modal .tag{color:#c98a91; border-color:#5a2a2f}
+  #lab-modal .btn-x{border-color:#5a2a2f; color:#e08a92}
+  #lab-modal .btn-x:hover{border-color:var(--red); color:var(--bg); background:var(--red)}
+  #lab-modal .lab-sym:focus{outline:none; border-color:var(--red)}
+  #lab-modal .lab-h{color:#c98a91}
+  #lab-modal table.lab th{border-bottom-color:#43282b}
+  #lab-modal .lab-note{border-left-color:#5a2a2f}
+  #lab-modal .scan-loading{color:var(--red)}
+  /* the lab */
+  .lab-sel{background:#1b1b1c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
+    padding:4px 6px; font-family:inherit; font-size:10px; letter-spacing:.5px;
+    width:118px; flex:0 0 118px; align-self:center}
+  .lab-sel:focus{outline:none; border-color:var(--red)}
+  .lab-chk{display:inline-flex; align-items:center; gap:5px; font-size:10px; color:var(--dim);
+    letter-spacing:1px; white-space:nowrap}
+  .lab-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:9px; margin:8px 0}
+  .lab-card{border:1px solid var(--edge); border-radius:4px; padding:9px 11px; background:#1b1b1c}
+  .lab-card h5{margin:0 0 6px; font-size:9px; letter-spacing:2px; text-transform:uppercase; color:#c98a91; font-weight:400}
+  .lab-card .big{font-size:18px; font-family:var(--mono); font-weight:700; color:var(--ink)}
+  .lab-card .sub{font-size:10px; color:var(--dim); margin-top:3px; line-height:1.5}
+  .lab-sym{background:#1b1b1c; border:1px solid var(--edge); color:var(--ink); border-radius:3px;
+    padding:4px 8px; font-family:var(--mono); font-size:11px; width:110px; letter-spacing:1px}
+  .lab-body{padding:4px 2px; font-size:12px}
+  .lab-note{color:var(--dim); font-size:11px; line-height:1.6; margin:6px 0 12px;
+    border-left:2px solid var(--edge); padding-left:10px}
+  .lab-note b{color:var(--ink)}
+  .lab-warn{border-left-color:var(--amber); color:var(--amber)}
+  .lab-h{font-size:10px; letter-spacing:2px; text-transform:uppercase; color:var(--silver2);
+    margin:16px 0 6px}
+  table.lab{width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums}
+  table.lab th{font-size:9px; letter-spacing:1px; text-transform:uppercase; color:var(--dim);
+    text-align:left; padding:4px 6px; border-bottom:1px solid var(--edge); font-weight:400}
+  table.lab td{padding:5px 6px; border-bottom:1px solid rgba(255,255,255,.045); font-size:11px}
+  table.lab td.num{text-align:right; font-family:var(--mono)}
+  .lab-held{color:var(--green); font-weight:700}
+  .lab-failed{color:var(--red)}
+  .lab-adopt{cursor:pointer; background:#1d1e20; border:1px solid var(--green); color:var(--green);
+    border-radius:3px; padding:3px 9px; font-family:inherit; font-size:10px; letter-spacing:1px}
+  .lab-adopt:hover{background:var(--green); color:var(--bg)}
+  .lab-adopt:disabled{border-color:var(--edge); color:var(--dim); cursor:not-allowed; background:#1a1b1c}
+  .pb-row{display:flex; align-items:center; gap:10px; padding:6px 8px; border:1px solid var(--edge);
+    border-radius:3px; background:#1b1b1c; margin-bottom:5px; font-size:11px}
+  .pb-row .spacer{flex:1}
   .led{display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px;
     box-shadow:var(--glow) currentColor; vertical-align:middle}
   .led.on{color:var(--green)} .led.off{color:var(--red)} .led.warn{color:var(--amber)}
@@ -619,8 +670,9 @@
     <span class="chip" id="chip-source">DATA <b id="v-source">—</b></span>
     <span class="chip mode-chip" id="chip-mode">MODE
       <select id="mode-sel" onchange="changeMode()"
-              title="dashboard = read-only · paper/live place orders (needs a connected account)">
+              title="dashboard = read-only · backtest = the strategy lab · paper/live place orders (needs a connected account)">
         <option value="dashboard">DASHBOARD</option>
+        <option value="backtest">BACKTEST</option>
         <option value="paper">PAPER</option>
         <option value="live">LIVE</option>
       </select>
@@ -904,8 +956,10 @@ async function changeMode(){
     CFG = await api('/api/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
     applyModeChip();
     const note = m==='dashboard' ? 'read-only — no orders will be placed'
+                : m==='backtest' ? 'strategy lab — read-only, no orders will be placed'
                 : (CFG.connected ? 'orders will be sent to Alpaca' : 'connect an account under Accounts to place orders');
-    log(`mode → ${m.toUpperCase()} · ${note}`, m==='dashboard'?'dim':'warn');
+    log(`mode → ${m.toUpperCase()} · ${note}`, (m==='dashboard'||m==='backtest')?'dim':'warn');
+    if(m==='backtest') openLab(); else closeLab();
     loadPortfolio();
   }catch(e){ log('could not change mode: '+e.message,'err'); $('mode-sel').value=CFG.mode; }
 }
@@ -2343,6 +2397,209 @@ function addAllTopPicks(){
   renderScan(LAST_SCAN);
 }
 
+/* ---------- the strategy lab ----------
+   A search over every pairing in the library, ranked by the probability the
+   edge is real rather than by what it paid, and measured against a quarter of
+   history it never saw. The out-of-sample column is the headline; the yield is
+   a footnote. That ordering is the whole point and the UI keeps it. */
+let LAB = null;
+
+function openLab(){
+  $('lab-modal').classList.add('open');
+  if(!$('lab-symbol').value) $('lab-symbol').value = SYMBOL;
+  loadLab();
+}
+function closeLab(){ $('lab-modal').classList.remove('open'); }
+
+async function loadLab(){
+  const sym = ($('lab-symbol').value || SYMBOL).trim().toUpperCase();
+  try{ LAB = await api('/api/lab?symbol='+encodeURIComponent(sym)); }
+  catch(e){ LAB = null; }
+  renderLab();
+}
+
+async function runLab(){
+  const sym = ($('lab-symbol').value || SYMBOL).trim().toUpperCase();
+  $('lab-body').innerHTML = '<div class="scan-loading">searching every pairing over '+
+    esc(sym)+'…</div>';
+  try{
+    LAB = await api('/api/lab/run', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({symbol: sym,
+        years: parseInt($('lab-years').value,10) || 0,
+        costBps: parseFloat($('lab-cost').value),
+        holdoutFrac: parseFloat($('lab-holdout').value),
+        longOnly: $('lab-longonly').checked})});
+    log('lab: '+LAB.nTrials+' combinations tried on '+esc(sym), 'ok');
+  }catch(e){
+    $('lab-body').innerHTML = '<div class="lab-note lab-warn">'+esc(e.message)+'</div>';
+    return;
+  }
+  renderLab();
+}
+
+function renderLab(){
+  const el = $('lab-body'); if(!el) return;
+  const d = LAB;
+  if(!d || !d.nTrials){
+    el.innerHTML = '<div class="lab-note">No search stored for this symbol yet. '+
+      'Press <b>RUN SEARCH</b> — it takes about a second.</div>';
+    return;
+  }
+  let h = '<div class="lab-note'+(d.real===false?' lab-warn':'')+'">'+esc(d.summary||'')+'</div>';
+
+  h += '<div class="lab-h">Out of sample — the only column that matters</div>';
+  h += '<table class="lab"><thead><tr><th>Strategy</th><th class="num">Searched</th>'+
+       '<th class="num">Holdout</th><th class="num">Decay</th><th class="num">DSR</th>'+
+       '<th>Verdict</th><th></th></tr></thead><tbody>';
+  for(const r of (d.holdout||[])){
+    const held = r.heldUp;
+    h += '<tr><td>'+esc(r.name)+'</td>'+
+      '<td class="num">'+fmt(r.searched.sharpe,2)+'</td>'+
+      '<td class="num '+(held?'lab-held':'lab-failed')+'">'+fmt(r.holdout.sharpe,2)+'</td>'+
+      '<td class="num">'+fmt(r.decay,2)+'</td>'+
+      '<td class="num">'+(r.dsr*100).toFixed(0)+'%</td>'+
+      '<td class="'+(held?'lab-held':'lab-failed')+'">'+(held?'held up':'did not hold up')+'</td>'+
+      '<td class="num"><button class="lab-adopt"'+(held?'':' disabled title="Only a strategy that survived the untouched quarter can be integrated."')+
+        ' onclick="adoptStrategy(\''+esc(d.symbol)+'\', \''+esc(r.name).replace(/'/g,"\\'")+'\')">'+
+        (held?'+ INTEGRATE':'REFUSED')+'</button></td></tr>';
+  }
+  h += '</tbody></table>';
+
+  h += '<div class="lab-h">All '+d.nTrials+' trials, ranked by deflated Sharpe</div>';
+  h += '<table class="lab"><thead><tr><th>Strategy</th><th>Kind</th><th class="num">Sharpe</th>'+
+       '<th class="num">Gross</th><th class="num">CAGR</th><th class="num">Max DD</th>'+
+       '<th class="num">Turn/yr</th><th class="num">DSR</th></tr></thead><tbody>';
+  for(const r of (d.ranked||[]).slice(0,25)){
+    h += '<tr><td>'+esc(r.name)+'</td><td style="color:var(--dim)">'+esc(r.kind)+'</td>'+
+      '<td class="num">'+fmt(r.sharpe,2)+'</td><td class="num" style="color:var(--dim)">'+fmt(r.grossSharpe,2)+'</td>'+
+      '<td class="num">'+(r.cagr*100).toFixed(1)+'%</td>'+
+      '<td class="num" style="color:var(--red)">'+(r.maxDrawdown*100).toFixed(1)+'%</td>'+
+      '<td class="num">'+fmt(r.turnover,1)+'</td>'+
+      '<td class="num">'+(r.dsr*100).toFixed(0)+'%</td></tr>';
+  }
+  h += '</tbody></table>';
+  h += '<div class="lab-note">Gross is before costs. The gap between it and Sharpe is what '+
+       'the spread took — the reason a high-turnover winner is usually not one. '+
+       'Only the top '+ (d.holdoutLooks||0) +' were shown the holdout: every look spends a '+
+       'little of it.</div>';
+  el.innerHTML = h + '<div id="dive-wrap"></div><div id="pb-wrap"></div>';
+  renderPlaybook();
+  if((d.holdout||[]).length) diveInto(d.symbol, d.holdout[0].name);
+}
+
+/* The four questions a single Sharpe cannot answer: how wide the uncertainty
+   is, at what cost level the edge disappears, and whether it works in more than
+   one kind of market. */
+async function diveInto(symbol, name){
+  const el = $('dive-wrap'); if(!el) return;
+  el.innerHTML = '<div class="lab-h">Digging into the top candidate…</div>';
+  let d;
+  try{
+    d = await api('/api/lab/dive?symbol='+encodeURIComponent(symbol)+
+                  '&strategy='+encodeURIComponent(name));
+  }catch(e){ el.innerHTML=''; return; }
+  if(d.error){ el.innerHTML = '<div class="lab-note lab-warn">'+esc(d.error)+'</div>'; return; }
+
+  const ci = d.confidence || {};
+  const cs = d.costStress || {};
+  const rg = d.byRegime || {};
+  const be = cs.breakevenBps;
+
+  let h = '<div class="lab-h">'+esc(name)+' — out of sample, in depth</div><div class="lab-grid">';
+  h += '<div class="lab-card"><h5>Confidence interval</h5><div class="big">'+
+       (ci.low==null?'—':fmt(ci.low,2)+' to '+fmt(ci.high,2))+'</div>'+
+       '<div class="sub">'+(ci.spansZero
+         ? 'Spans zero — this track record is consistent with having no edge at all.'
+         : 'Does not span zero, on '+ci.n+' observations.')+'</div></div>';
+  h += '<div class="lab-card"><h5>Breaks even at</h5><div class="big">'+
+       (be==null?'never tested to zero':be+' bps')+'</div>'+
+       '<div class="sub">'+(cs.survivesRealCosts
+         ? 'Still positive at ten basis points, so the edge has room in it.'
+         : 'Dies at retail costs — the backtest edge is thinner than the spread.')+
+       '</div></div>';
+  for(const k of ['bull','sideways','bear']){
+    const r = rg[k]; if(!r) continue;
+    h += '<div class="lab-card"><h5>'+k+' regime</h5><div class="big">'+
+         (r.sharpe==null?'—':fmt(r.sharpe,2))+'</div>'+
+         '<div class="sub">'+r.days+' days'+(r.total==null?'':' · total '+(r.total*100).toFixed(1)+'%')+
+         '</div></div>';
+  }
+  h += '</div>';
+  if(cs.curve && cs.curve.length){
+    h += '<div class="lab-note">Sharpe against costs: '+
+         cs.curve.map(p=>p.bps+'bps '+fmt(p.sharpe,2)).join('  ·  ')+
+         '. A strategy that only works at zero cost is a description of the data, not a plan.</div>';
+  }
+  const worksEverywhere = ['bull','sideways','bear'].filter(k=>rg[k] && rg[k].sharpe>0).length;
+  h += '<div class="lab-note">'+(worksEverywhere>=2
+        ? 'Positive in '+worksEverywhere+' of three regimes.'
+        : 'Positive in only '+worksEverywhere+' of three regimes — a strategy that makes '+
+          'everything in one kind of market and gives it back in another is a leveraged '+
+          'long wearing a costume, and the blended Sharpe hides that completely.')+'</div>';
+  el.innerHTML = h;
+}
+
+async function renderPlaybook(){
+  const el = $('pb-wrap'); if(!el) return;
+  let d; try{ d = await api('/api/playbook'); }catch(e){ return; }
+  let h = '<div class="lab-h">Playbook — running on the live side ('+
+          (d.active||[]).length+' of '+d.maxActive+')</div>';
+  if(!(d.active||[]).length){
+    h += '<div class="lab-note">Nothing integrated yet. Only a strategy that survived '+
+         'the untouched quarter, with an out-of-sample Sharpe above <b>'+d.minHoldoutSharpe+
+         '</b> and a deflated Sharpe above <b>'+(d.minDsr*100).toFixed(0)+'%</b>, can be added. '+
+         'There is no override: a search winner is untrustworthy by construction.</div>';
+  }else{
+    for(const r of d.active){
+      h += '<div class="pb-row"><b>'+esc(r.symbol)+'</b> · '+esc(r.strategy)+
+        '<span class="spacer"></span>'+
+        '<span style="color:var(--dim)">out-of-sample</span> <b>'+fmt(r.holdoutSharpe,2)+'</b>'+
+        ' · <span style="color:var(--dim)">DSR</span> '+(r.dsr*100).toFixed(0)+'%'+
+        ' · <span style="color:var(--dim)">'+r.nTrials+' trials</span>'+
+        ' <button class="btn-x" onclick="toggleForward(\''+esc(r.symbol)+'\',\''+
+          esc(r.strategy).replace(/'/g,"\\'")+'\','+(r.forward?'false':'true')+')">'+
+          (r.forward?'■ stop forward test':'▶ forward test (paper)')+'</button>'+
+        ' <button class="btn-x" onclick="dropStrategy(\''+esc(r.symbol)+'\',\''+
+          esc(r.strategy).replace(/'/g,"\\'")+'\')">remove</button></div>';
+    }
+  }
+  el.innerHTML = h;
+}
+
+async function toggleForward(symbol, name, on){
+  try{
+    const r = await api('/api/forward/toggle', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({symbol: symbol, strategy: name, forward: on})});
+    const f = r.forward || {};
+    log(on ? ('forward test on for '+name+' — '+(f.allowed
+              ? 'trading paper money to build an out-of-sample record'
+              : f.reason))
+           : ('forward test stopped for '+name), on && f.allowed ? 'ok' : 'warn');
+    renderPlaybook();
+  }catch(e){ log('could not change forward test: '+e.message,'err'); }
+}
+
+async function adoptStrategy(symbol, name){
+  try{
+    const r = await api('/api/playbook/adopt', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({symbol: symbol, strategy: name})});
+    log('integrated '+name+' on '+symbol+' — it will size and gate orders from now on','ok');
+    renderPlaybook();
+  }catch(e){ log('not integrated: '+e.message,'err'); }
+}
+
+async function dropStrategy(symbol, name){
+  try{
+    await api('/api/playbook/drop', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({symbol: symbol, strategy: name})});
+    log('removed '+name+' from the playbook','warn');
+    renderPlaybook();
+  }catch(e){ log('could not remove: '+e.message,'err'); }
+}
+
 /* ---------- trading blotter ---------- */
 /* A resting order is only readable next to the price it is waiting for. Without
    these columns the table said an order existed but nothing about whether it was
@@ -3073,6 +3330,7 @@ async function boot(){
   await loadConfig();
   checkBuild();
   applyBottom();                  // restore whether the lower panels were open
+  if(CFG.mode === 'backtest') openLab();
   syncOrderFields();
   wireControls();
   await loadState(false);
@@ -3129,6 +3387,30 @@ boot();
     </div>
     <div class="scan-list" id="scan-list"></div>
     <div class="scan-foot" id="scan-foot"></div>
+  </div>
+</div>
+
+<div class="modal" id="lab-modal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>⚗ Strategy Lab <span class="tag">search · deflate · hold out</span></h3>
+      <div class="spacer"></div>
+      <input class="lab-sym" id="lab-symbol" placeholder="SYMBOL">
+      <select class="lab-sel" id="lab-years" title="How much history to search. An edge that only exists across a decade including 2008 may not be one you can trade now.">
+        <option value="0">all history</option><option value="10">10 years</option>
+        <option value="5" selected>5 years</option><option value="3">3 years</option></select>
+      <select class="lab-sel" id="lab-cost" title="Round-trip cost in basis points. The single most decisive setting: a search that assumes cheap fills crowns the highest-turnover noise in the library.">
+        <option value="0">0 bps (free)</option><option value="2.5">2.5 bps</option>
+        <option value="5" selected>5 bps</option><option value="10">10 bps</option>
+        <option value="20">20 bps</option></select>
+      <select class="lab-sel" id="lab-holdout" title="How much of the end of history the search never sees.">
+        <option value="0.2">20% held out</option><option value="0.25" selected>25% held out</option>
+        <option value="0.35">35% held out</option></select>
+      <label class="lab-chk" title="Shorting a single name costs borrow this engine does not model and can be recalled at the worst moment, so a short-side edge is less tradeable than it looks."><input type="checkbox" id="lab-longonly"> long only</label>
+      <button class="btn-x" onclick="runLab()">▶ RUN SEARCH</button>
+      <button class="btn-x" onclick="closeLab()">✕ Close</button>
+    </div>
+    <div class="lab-body" id="lab-body"></div>
   </div>
 </div>
 

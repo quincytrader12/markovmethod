@@ -24,6 +24,7 @@ SERVICE = "markov-hedge-fund-method"
 
 class Mode(str, Enum):
     DASHBOARD = "dashboard"  # read-only, no orders
+    BACKTEST = "backtest"    # the strategy lab; read-only like dashboard
     PAPER = "paper"          # orders on paper account
     LIVE = "live"            # orders on live account
 

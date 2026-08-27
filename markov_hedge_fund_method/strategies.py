@@ -185,6 +185,19 @@ def switch(a, b, window: int = 20, pct: float = 0.6):
     return f
 
 
+def long_only(a):
+    """Clip a strategy to the long side.
+
+    Not merely a preference. Shorting a single name costs borrow this engine
+    does not model, can be recalled at the worst moment, and turns a swing into
+    something with a day-trade profile — so a short-side edge found in a
+    backtest is less tradeable than the number suggests.
+    """
+    def f(close: pd.Series) -> pd.Series:
+        return _clip(pd.Series(a(close)).clip(lower=0.0))
+    return f
+
+
 def scale(a, factor):
     """Resize one strategy by another used purely as a sizing rule."""
     def f(close: pd.Series) -> pd.Series:

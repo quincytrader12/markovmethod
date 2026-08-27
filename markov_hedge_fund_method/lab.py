@@ -145,13 +145,21 @@ def _candidates(lib: dict, close: pd.Series, cost_bps: float, pair: bool):
 
 
 def search(close: pd.Series, *, symbol: str = "", cost_bps: float = bt.DEFAULT_COST_BPS,
-           holdout_frac: float = 0.25, pair: bool = True,
+           holdout_frac: float = 0.25, pair: bool = True, long_only: bool = False,
            progress=None) -> LabResult:
-    """Run the whole lab over one symbol's history."""
+    """Run the whole lab over one symbol's history.
+
+    `long_only` clips every candidate at zero. Worth having as a switch rather
+    than an assumption: shorting a single equity carries a borrow cost this
+    engine does not model and a day-trade profile the account may not want, so a
+    short-side edge found here is less tradeable than it looks.
+    """
     started = time.time()
     close = pd.Series(close).astype(float).dropna()
     searched, holdout = bt.split(close, holdout_frac)
     lib = st.library()
+    if long_only:
+        lib = {k: st.long_only(v) for k, v in lib.items()}
 
     trials: list[Trial] = []
     built: dict[str, object] = {}
@@ -304,3 +312,135 @@ def recommendations(config_dir: str, min_dsr: float = 0.5) -> list:
                 })
     out.sort(key=lambda r: r["dsr"], reverse=True)
     return out
+
+
+# ── going deeper on a candidate ─────────────────────────────────────────────
+# Cost levels a strategy is re-run at. The question is not what it made at one
+# assumed spread but at what spread it stops working, because that number says
+# whether the edge has any room in it or is an artefact of an optimistic fill.
+STRESS_BPS = (0.0, 2.5, 5.0, 10.0, 20.0, 40.0)
+
+
+def cost_stress(fn, close: pd.Series, levels=STRESS_BPS) -> dict:
+    """Where does this strategy stop making money as costs rise?
+
+    A Sharpe of 1.2 that survives forty basis points is a different animal from
+    one that dies at seven, and the single-cost number cannot tell them apart.
+    """
+    curve = []
+    breakeven = None
+    for bps in levels:
+        t = _score(fn, close, bps)
+        if t is None:
+            continue
+        curve.append({"bps": bps, "sharpe": round(t.sharpe, 3),
+                      "cagr": round(t.cagr, 4)})
+        if breakeven is None and t.sharpe <= 0:
+            breakeven = bps
+    return {"curve": curve,
+            "breakevenBps": breakeven,
+            "survivesRealCosts": bool(breakeven is None or breakeven > 10.0)}
+
+
+def bootstrap_sharpe(returns: pd.Series, n: int = 1000, seed: int = 0) -> dict:
+    """A confidence interval on the Sharpe, by resampling the returns.
+
+    A point estimate from a few hundred observations is a very noisy thing to
+    make a decision on. Resampling says how noisy: an interval spanning zero
+    means the track record is consistent with having no edge, whatever the
+    headline number was.
+    """
+    r = np.asarray(pd.Series(returns).dropna(), dtype=float)
+    if len(r) < 30:
+        return {"low": None, "high": None, "spansZero": True, "n": len(r)}
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(r), size=(n, len(r)))
+    draws = r[idx]
+    mu = draws.mean(axis=1)
+    sd = draws.std(axis=1, ddof=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sh = np.where(sd > 0, mu / sd * math.sqrt(bt.TRADING_DAYS), 0.0)
+    lo, hi = np.percentile(sh, [5, 95])
+    return {"low": round(float(lo), 3), "high": round(float(hi), 3),
+            "spansZero": bool(lo <= 0 <= hi), "n": int(len(r))}
+
+
+def by_regime(fn, close: pd.Series, cost_bps: float = bt.DEFAULT_COST_BPS,
+              window: int = 20, threshold: float = 0.02) -> dict:
+    """How the strategy did in each of the terminal's own three regimes.
+
+    A strategy that makes everything in bull markets and gives it back in bear
+    ones is a leveraged long wearing a costume, and the blended Sharpe hides
+    that completely. This is the question the rest of the terminal is built
+    around, so the lab should answer it in the same vocabulary.
+    """
+    close = pd.Series(close).astype(float).dropna()
+    track = _score(fn, close, cost_bps)
+    if track is None:
+        return {}
+    roll = close.pct_change(window)
+    state = pd.Series("sideways", index=close.index)
+    state[roll > threshold] = "bull"
+    state[roll < -threshold] = "bear"
+
+    out = {}
+    for name in ("bull", "sideways", "bear"):
+        r = track.returns[state == name]
+        if len(r) < 20:
+            out[name] = {"days": int(len(r)), "sharpe": None, "total": None}
+            continue
+        sd = float(r.std(ddof=1))
+        out[name] = {
+            "days": int(len(r)),
+            "sharpe": round(float(r.mean() / sd * math.sqrt(bt.TRADING_DAYS)), 3) if sd > 0 else 0.0,
+            "total": round(float((1 + r).prod() - 1.0), 4),
+        }
+    return out
+
+
+def deep_dive(symbol: str, name: str, close: pd.Series, *,
+              cost_bps: float = bt.DEFAULT_COST_BPS,
+              holdout_frac: float = 0.25) -> dict:
+    """Everything worth knowing about one candidate, on the holdout.
+
+    Rebuilt from the library rather than stored, so a dive always reflects the
+    strategy as it is defined now rather than as it was when the search ran.
+    """
+    searched, holdout = bt.split(pd.Series(close).astype(float).dropna(), holdout_frac)
+    fn = rebuild(name)
+    if fn is None:
+        return {"error": f"{name!r} is no longer in the library"}
+    track = _score(fn, holdout, cost_bps)
+    if track is None:
+        return {"error": "no track record on the holdout"}
+    return {
+        "symbol": symbol, "strategy": name,
+        "holdout": track.summary(),
+        "confidence": bootstrap_sharpe(track.returns),
+        "costStress": cost_stress(fn, holdout),
+        "byRegime": by_regime(fn, holdout, cost_bps),
+    }
+
+
+def rebuild(name: str):
+    """Turn a stored strategy name back into a function.
+
+    Names are generated by `_candidates`, so parsing them back is the inverse of
+    one function and is kept beside it deliberately.
+    """
+    lib = st.library()
+    if name in lib:
+        return lib[name]
+    if " scaled by " in name:
+        a, b = name.split(" scaled by ", 1)
+        if a in lib and b in lib:
+            return st.scale(lib[a], lib[b])
+        return None
+    if name.endswith(")") and " + " in name:
+        body, kind = name.rsplit(" (", 1)
+        kind = kind[:-1]
+        a, b = body.split(" + ", 1)
+        combiner = st.PAIRINGS.get(kind)
+        if combiner and a in lib and b in lib:
+            return combiner(lib[a], lib[b])
+    return None

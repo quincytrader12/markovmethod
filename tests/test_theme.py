@@ -22,7 +22,13 @@ SCRIPT = SOURCE.split("<style>", 1)[0] + SOURCE.split("</style>", 1)[1]
 # data colours. Everything else is chrome and must stay quiet.
 ACCENT = {"#4da3ff", "#9ccfff"}
 DATA = {"#2fe08a", "#ff4d5e", "#f5c451", "#f5834d", "#9fe06a"}
-NEON = ACCENT | DATA
+# The strategy lab is deliberately the one room with a different accent: it is
+# research rather than execution, and a number there is a claim about the past
+# while one on the main screen is a decision about now. Muted reds, scoped to
+# `#lab-modal` in the stylesheet, and allowed here for that reason alone.
+LAB_RED = {"#5a2a2f", "#43282b", "#c98a91", "#e08a92"}
+
+NEON = ACCENT | DATA | LAB_RED
 
 
 def _hsl(h: str):
@@ -157,3 +163,20 @@ def test_there_is_only_one_accent():
 
 def test_the_scanline_overlay_is_neutral():
     assert "rgba(0,10,20" not in SOURCE, "the scanline is tinting the whole screen blue"
+
+
+def test_the_labs_red_is_confined_to_the_lab():
+    """The one room with a different accent stays one room. A stray lab red on a
+    main-terminal surface would be the 'too loud' complaint all over again, in a
+    different hue."""
+    for colour in LAB_RED:
+        for line in STYLE.splitlines():
+            if colour in line.lower():
+                assert "#lab-modal" in line or "lab-" in line, \
+                    f"{colour} escaped the lab: {line.strip()}"
+
+
+def test_the_lab_still_uses_the_grey_surfaces():
+    """Red accents, same terminal. The panels underneath must not change."""
+    lab_css = "\n".join(ln for ln in STYLE.splitlines() if "#lab-modal" in ln or ".lab-" in ln)
+    assert "#1b1b1c" in lab_css, "the lab drifted off the shared surface colour"

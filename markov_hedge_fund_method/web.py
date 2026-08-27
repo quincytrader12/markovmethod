@@ -169,6 +169,11 @@ class AppState:
         self.watchlist = WatchlistStore()
         from .sweep import MarketSweep
         self.sweep = MarketSweep(self)
+        # Forward testing is created but never started here: it starts only when
+        # a strategy is actually put under test, and it refuses to trade
+        # anywhere but a paper account regardless.
+        from .forwardtest import ForwardTester
+        self.forward = ForwardTester(self)
         # Symbols the user is actually looking at, so the full-market sweep does
         # not evict the history behind their own chart while they use it.
         self.watchlist_hint: list = list(DEFAULT_SYMBOLS)
@@ -1118,6 +1123,185 @@ def create_app(state: AppState):
             out["reason"] = "Placeholder bars — no timing read on data this is not."
         return out
 
+    # ── the strategy lab ────────────────────────────────────────────────
+    def _lab_dir() -> str:
+        from .accounts import default_config_dir
+        return default_config_dir()
+
+    @app.post("/api/lab/run")
+    async def lab_run(request: Request):
+        """Search every strategy pairing over one symbol's history.
+
+        Synchronous on purpose: a search is a deliberate act that takes about a
+        second, and a progress bar for something that fast is theatre. The sweep
+        is the thing that runs in the background; this is not.
+        """
+        from . import lab
+
+        data = await request.json() if await request.body() else {}
+        symbol = str(data.get("symbol") or state.settings.ticker).strip().upper()
+        cost = float(data.get("costBps") or 0) or None
+        holdout = float(data.get("holdoutFrac") or 0) or 0.25
+        years = int(data.get("years") or 0)
+        long_only = bool(data.get("longOnly"))
+
+        df, source = state.ohlc_for(symbol)
+        if df is None or df.empty or len(df) < 300:
+            raise HTTPException(status_code=422, detail=(
+                f"{symbol} has too little history to search — a few years of "
+                "daily bars are needed before a backtest means anything."))
+        real = not str(source).startswith("synthetic")
+
+        close = df["Close"]
+        if years > 0:
+            # Searching a shorter window is a real question, not a convenience:
+            # an edge that only exists across a decade including 2008 may not be
+            # one you can trade now.
+            close = close.iloc[-int(years * 252):]
+        kw = {"symbol": symbol, "holdout_frac": holdout, "long_only": long_only}
+        if cost:
+            kw["cost_bps"] = cost
+        result = lab.search(close, **kw)
+        blob = result.to_dict()
+        blob["summary"] = lab.summarise(result)
+        blob["dataSource"] = source
+        blob["real"] = real
+        if not real:
+            # A search over invented prices finds the shape of the generator, not
+            # of a market. Storing it would let it reach the playbook later.
+            blob["summary"] = ("Placeholder bars — this search describes the "
+                               "demo data generator, not a market. Connect an "
+                               "account for a real result.")
+        else:
+            lab.save(result, _lab_dir())
+        return blob
+
+    @app.get("/api/lab")
+    def lab_get(symbol: str = ""):
+        """The last search for a symbol, or every stored run."""
+        from . import lab
+
+        if symbol.strip():
+            blob = lab.load(_lab_dir(), symbol)
+            return blob or {"symbol": symbol.strip().upper(), "ranked": [],
+                            "holdout": [], "nTrials": 0}
+        return {"runs": [{"symbol": b.get("symbol"), "nTrials": b.get("nTrials"),
+                          "ranAt": b.get("ranAt"),
+                          "best": (b.get("holdout") or [{}])[0].get("name", ""),
+                          "heldUp": (b.get("holdout") or [{}])[0].get("heldUp", False)}
+                         for b in lab.load_all(_lab_dir())]}
+
+    @app.get("/api/lab/dive")
+    def lab_dive(symbol: str = "SPY", strategy: str = "", costBps: float = 0.0):
+        """Everything worth knowing about one candidate, on the holdout."""
+        from . import lab
+
+        symbol = symbol.strip().upper()
+        df, _src = state.ohlc_for(symbol)
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail=f"no history for {symbol}")
+        kw = {"cost_bps": costBps} if costBps else {}
+        return lab.deep_dive(symbol, strategy.strip(), df["Close"], **kw)
+
+    @app.get("/api/forward")
+    def forward_status():
+        """Whether forward testing may run, and what it has done."""
+        return state.forward.status()
+
+    @app.post("/api/forward/toggle")
+    async def forward_toggle(request: Request):
+        """Put a playbook entry under forward test, or take it off.
+
+        Turning it on does not make it trade — `may_autotrade` still has to
+        agree, and it only agrees on a paper account.
+        """
+        from . import playbook
+
+        data = await request.json()
+        symbol = str(data.get("symbol", "")).strip().upper()
+        name = str(data.get("strategy", "")).strip()
+        on = bool(data.get("forward", True))
+        rows = playbook.load(_lab_dir())
+        hit = False
+        for r in rows:
+            if r["symbol"] == symbol and r["strategy"] == name:
+                r["forward"] = on
+                hit = True
+        if not hit:
+            raise HTTPException(status_code=404, detail="not in the playbook")
+        playbook._write(_lab_dir(), rows)
+        if on:
+            state.forward.start()
+        return {"active": rows, "forward": state.forward.status()}
+
+    @app.post("/api/forward/run")
+    def forward_run():
+        """Run one reconciliation pass now instead of waiting for the timer."""
+        return state.forward.tick()
+
+    @app.get("/api/playbook")
+    def playbook_get(symbol: str = ""):
+        """What the terminal is actually running, and what it thinks right now."""
+        from . import playbook
+
+        rows = playbook.load(_lab_dir())
+        out = {"active": rows, "minHoldoutSharpe": playbook.MIN_HOLDOUT_SHARPE,
+               "minDsr": playbook.MIN_DSR, "maxActive": playbook.MAX_ACTIVE}
+        sym = symbol.strip().upper()
+        if sym:
+            df, _ = state.ohlc_for(sym)
+            close = df["Close"] if df is not None and not df.empty else None
+            out["consult"] = playbook.consult(_lab_dir(), sym, close)
+        return out
+
+    @app.post("/api/playbook/adopt")
+    async def playbook_adopt(request: Request):
+        """Put a lab result to work on the live side.
+
+        The gate is `playbook.check` and there is no way past it: a search
+        winner is untrustworthy by construction, so anything that did not
+        survive the untouched quarter is refused rather than warned about.
+        """
+        from . import lab, playbook
+
+        data = await request.json()
+        symbol = str(data.get("symbol", "")).strip().upper()
+        name = str(data.get("strategy", "")).strip()
+        blob = lab.load(_lab_dir(), symbol)
+        if not blob:
+            raise HTTPException(status_code=404, detail=f"No lab run stored for {symbol}.")
+        entry = next((h for h in blob.get("holdout", []) if h.get("name") == name), None)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=(
+                f"{name!r} was not one of the candidates measured against the "
+                "holdout, so there is no out-of-sample result to judge it on."))
+        entry = {**entry, "nTrials": blob.get("nTrials", 0),
+                 "parts": next((r.get("parts") for r in blob.get("ranked", [])
+                                if r.get("name") == name), [])}
+        try:
+            row = playbook.adopt(_lab_dir(), symbol, entry)
+        except playbook.NotProven as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"adopted": row, "active": playbook.load(_lab_dir())}
+
+    @app.post("/api/playbook/drop")
+    async def playbook_drop(request: Request):
+        from . import playbook
+
+        data = await request.json()
+        n = playbook.drop(_lab_dir(), str(data.get("symbol", "")),
+                          str(data.get("strategy", "")))
+        return {"removed": n, "active": playbook.load(_lab_dir())}
+
+    @app.post("/api/playbook/toggle")
+    async def playbook_toggle(request: Request):
+        from . import playbook
+
+        data = await request.json()
+        playbook.set_enabled(_lab_dir(), str(data.get("symbol", "")),
+                             str(data.get("strategy", "")), bool(data.get("enabled", True)))
+        return {"active": playbook.load(_lab_dir())}
+
     @app.get("/api/ticket-levels")
     def ticket_levels_endpoint(symbol: str = "SPY", side: str = "buy",
                                tf: str = "1D", riskPct: float = 0.01):
@@ -1877,6 +2061,30 @@ def create_app(state: AppState):
                 if mult < 1.0:
                     ticket = _scale_ticket(ticket, mult)
 
+        # The playbook: strategies the lab proved and the user adopted. It sits
+        # in the same seam as the forest — it may shrink an order or refuse one
+        # whose direction every adopted strategy is against, and it may never
+        # enlarge one, flip a side, or place anything itself.
+        book = None
+        if not data.get("skipPlaybook"):
+            try:
+                from . import playbook as _pb
+                df, _src = state.ohlc_for(ticket.symbol)
+                close = df["Close"] if df is not None and not df.empty else None
+                book = _pb.consult(_lab_dir(), ticket.symbol, close)
+                if _pb.side_conflict(book, getattr(ticket, "side", "buy")):
+                    raise HTTPException(status_code=409, detail=(
+                        f"Every adopted strategy for {ticket.symbol} is pointing "
+                        f"the other way ({book['reason']}). Send it again with "
+                        "'skipPlaybook' to override."))
+                mult = float(book.get("multiplier", 1.0))
+                if 0.0 < mult < 1.0 and _is_opening(state, ticket):
+                    ticket = _scale_ticket(ticket, mult)
+            except HTTPException:
+                raise
+            except Exception:  # noqa: BLE001 — an advisory layer that breaks
+                book = None    # must not take the order down with it
+
         # The day-trade guard. It refuses only the specific order that would be
         # the fourth day trade in a rolling five sessions on an account under
         # the equity floor — the one action that costs ninety days of access.
@@ -1931,6 +2139,8 @@ def create_app(state: AppState):
                 out["priceCheck"] = drift
         if pdt_note is not None and pdt_note.get("severity") in ("warn", "info"):
             out["dayTrade"] = pdt_note
+        if book and book.get("votes"):
+            out["playbook"] = book
         if sizing is not None and sizing.get("engaged") and float(sizing["multiplier"]) < 1.0:
             # Say so in the response. An order that went out smaller than the
             # one you typed must never be reported as though nothing happened.
