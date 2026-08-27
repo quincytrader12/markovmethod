@@ -124,8 +124,26 @@ def test_status_reports_real_progress():
     assert st["cycle"] == 0 and st["scanned"] == 0
 
 
+def _fetching(state):
+    """A state whose fetch actually returns something.
+
+    Both tests below used to pass without one, because a chunk that fetched
+    nothing still counted every symbol in it as scanned — while marking them all
+    dead. Progress was advancing on work that had not happened.
+    """
+    from markov_hedge_fund_method.market_data import synthetic_ohlc
+
+    def fetch(syms):
+        for i, sym in enumerate(syms):
+            state._ohlc_cache[sym] = (time.monotonic(), synthetic_ohlc(400, seed=i), "live")
+        return {"requested": len(syms), "fetched": len(syms), "missed": 0}
+
+    state.prefetch_ohlc = fetch
+    return state
+
+
 def test_progress_advances_with_the_cursor():
-    state = _state()
+    state = _fetching(_state())
     before = state.sweep.status()["scanned"]
     state.sweep.run_chunk()
     after = state.sweep.status()
@@ -133,8 +151,18 @@ def test_progress_advances_with_the_cursor():
     assert 0.0 <= after["progress"] <= 1.0
 
 
-def test_a_full_pass_wraps_and_counts_a_cycle():
+def test_progress_does_not_advance_on_a_fetch_that_never_ran():
+    """The other half of the same contract: a sweep that could not fetch has not
+    scanned anything, and saying otherwise is how the coverage figure lies."""
     state = _state()
+    state.prefetch_ohlc = lambda syms: {"requested": 0}
+    before = state.sweep.status()["scanned"]
+    state.sweep.run_chunk()
+    assert state.sweep.status()["scanned"] == before
+
+
+def test_a_full_pass_wraps_and_counts_a_cycle():
+    state = _fetching(_state())
     sweep = state.sweep
     sweep.universe = ["SPY", "QQQ"]
     sweep.cursor = 0
@@ -575,3 +603,105 @@ def test_remembered_dead_symbols_are_excluded_from_the_universe(tmp_path, monkey
     state._alpaca_exchange = {"AAPL": "NASDAQ", "NTDOY": "NASDAQ"}
     state.sweep.no_data.add("NTDOY")
     assert state.sweep.build_universe() == ["AAPL"]
+
+
+# ── the bug that killed the scanner's "Everything" view ─────────────────────
+def test_a_fetch_that_never_ran_marks_nothing_dead():
+    """The whole of it. Without credentials — or during an outage, or a rate
+    limit — prefetch does no work and returns having touched nothing. Reading
+    "not in the cache" as "no data published" wrote every symbol in the chunk to
+    disk as unpublishable, `build_universe` excluded them from then on, and one
+    launch before connecting an account blacklisted the entire market
+    permanently. Connecting one afterwards did not undo it.
+    """
+    state = _state()
+    sweep = MarketSweep(state)
+    sweep.no_data.clear()
+    sweep.universe = [f"SYM{i:03d}" for i in range(20)]
+    state.prefetch_ohlc = lambda syms: {"requested": 0, "cached": 0, "restored": 0,
+                                        "toppedUp": 0, "fetched": 0, "missed": 0}
+    out = sweep.run_chunk()
+    assert sweep.no_data == set(), "a failed fetch blacklisted the universe"
+    assert "blocked" in out
+
+
+def test_a_blocked_sweep_says_what_to_do_about_it():
+    state = _state()
+    sweep = MarketSweep(state)
+    sweep.universe = ["AAA"]
+    state.prefetch_ohlc = lambda syms: {"requested": 0}
+    sweep.run_chunk()
+    assert "connect" in (sweep.last_error or "").lower()
+
+
+def test_a_symbol_the_feed_answered_for_is_still_recorded_dead():
+    """The fix must not disable the feature: when the fetch ran and some symbols
+    came back, the ones that did not are genuinely unpublishable."""
+    state = _state()
+    sweep = MarketSweep(state)
+    sweep.no_data.clear()
+    sweep.universe = ["GOOD", "DEAD"]
+
+    from markov_hedge_fund_method.market_data import synthetic_ohlc
+
+    def fetch(syms):
+        state._ohlc_cache["GOOD"] = (time.monotonic(), synthetic_ohlc(400), "live")
+        return {"requested": 2, "fetched": 1, "missed": 1}
+
+    state.prefetch_ohlc = fetch
+    sweep.run_chunk()
+    assert "DEAD" in sweep.no_data
+    assert "GOOD" not in sweep.no_data
+
+
+def test_a_universe_mostly_marked_dead_is_repaired():
+    """Whole exchanges do not go dark at once. A list that large is a bug's
+    residue, and it has to be cleared or the scanner never recovers."""
+    state = _state()
+    sweep = MarketSweep(state)
+    candidates = [f"S{i:03d}" for i in range(100)]
+    sweep.no_data = set(candidates[:70])
+    live = sweep._live(candidates)
+    assert len(live) == 100
+    assert sweep.no_data == set()
+    assert "wrongly marked" in (sweep.last_error or "")
+
+
+def test_a_believable_dead_list_is_left_alone():
+    """A handful of genuinely unpublishable names must keep being skipped."""
+    state = _state()
+    sweep = MarketSweep(state)
+    candidates = [f"S{i:03d}" for i in range(100)]
+    sweep.no_data = set(candidates[:5])
+    live = sweep._live(candidates)
+    assert len(live) == 95
+    assert len(sweep.no_data) == 5
+
+
+def test_the_dead_list_applies_offline_too():
+    """Otherwise a poisoned list is invisible on the curated fallback."""
+    state = _state()
+    sweep = MarketSweep(state)
+    state.alpaca_symbols = lambda: []
+    sweep.no_data.clear()
+    assert len(sweep.build_universe()) > 0
+
+
+def test_the_empty_everything_view_explains_itself():
+    """"No names match these filters" is only true when something was scanned.
+    On the full-market scope an empty board usually means the sweep has not
+    scored anything yet, and blaming the filters sends the user to fix the
+    wrong thing."""
+    html = TestClient(create_app(_state())).get("/").text
+    assert "function scanEmptyReason" in html
+    assert "The market sweep is not running" in html
+    assert "cannot run" in html
+
+
+def test_the_blocked_reason_reaches_the_page():
+    state = _state()
+    state.prefetch_ohlc = lambda syms: {"requested": 0}
+    client = TestClient(create_app(state))
+    state.sweep.run_chunk()
+    d = client.get("/api/scan", params={"universe": "full", "top": 5}).json()
+    assert "connect" in (d["sweep"]["lastError"] or "").lower()

@@ -94,6 +94,14 @@ def is_common_stock(symbol: str, name: str) -> bool:
 
 
 class MarketSweep:
+    # A share of the universe above which "no data published" is not credible.
+    # OTC and delisted names are already filtered out before this applies, so
+    # what remains is tradable, listed and expected to report. A third of that
+    # going dark at once is not a market condition, it is a bug's residue — the
+    # case this was written for had marked 57% of the curated universe dead in a
+    # single pass that never fetched anything.
+    DEAD_LIMIT = 0.35
+
     """Rolling scan of the entire tradable universe."""
 
     def __init__(self, state):
@@ -174,14 +182,39 @@ class MarketSweep:
 
         syms = self.state.alpaca_symbols()
         if not syms:
-            return list(SCAN_ALL)
+            # Offline, the curated groups still make a universe — but the dead
+            # list has to apply here too, or a poisoned one is invisible.
+            return self._live(list(SCAN_ALL))
         names = getattr(self.state, "_alpaca_names", {}) or {}
         exch = getattr(self.state, "_alpaca_exchange", {}) or {}
-        out = [s for s in sorted(syms)
-               if is_common_stock(s, names.get(s, ""))
-               and not is_otc(exch.get(s, ""))
-               and s not in self.no_data]
-        return out or list(SCAN_ALL)
+        candidates = [s for s in sorted(syms)
+                      if is_common_stock(s, names.get(s, ""))
+                      and not is_otc(exch.get(s, ""))]
+        return self._live(candidates) or self._live(list(SCAN_ALL))
+
+    def _live(self, candidates: list[str]) -> list[str]:
+        """Drop the symbols known to publish nothing — unless nearly all of them
+        are, which means the list is wrong rather than the market.
+
+        An earlier version of `run_chunk` recorded a dead symbol whenever the
+        fetch had not run at all, so one launch without credentials wrote the
+        entire universe to disk as unpublishable and the scanner's "Everything"
+        view stayed empty from then on. Connecting an account afterwards did not
+        help, because the exclusion was already persisted. The fetch bug is
+        fixed; this repairs the files it already wrote.
+        """
+        if not candidates:
+            return []
+        dead = sum(1 for s in candidates if s in self.no_data)
+        if dead >= max(20, int(len(candidates) * self.DEAD_LIMIT)):
+            # Not a market in which four hundred companies stopped reporting on
+            # the same afternoon.
+            self.no_data.clear()
+            self.save_no_data()
+            self.last_error = (f"cleared {dead} symbols wrongly marked as having "
+                               "no data — they will be retried")
+            return list(candidates)
+        return [s for s in candidates if s not in self.no_data]
 
     # ── deference ───────────────────────────────────────────────────────────
     def yield_to_user(self, timeout: float = 30.0) -> None:
@@ -246,14 +279,35 @@ class MarketSweep:
             return {"scored": 0, "cursor": 0, "size": len(self.universe), "wrapped": True}
 
         self.yield_to_user()
-        self.state.prefetch_ohlc(batch)
+        stats = self.state.prefetch_ohlc(batch) or {}
 
-        # Anything the fetch returned nothing for has no published data. Note it
-        # once so future passes skip it instead of failing on it again.
+        # A symbol is only dead if the feed was asked and had nothing for it.
+        #
+        # This distinction is the whole of a bug that killed the scanner's
+        # "Everything" view outright. Without credentials — or during an outage,
+        # or a rate limit — prefetch does no work at all and returns having
+        # touched nothing. Reading "not in the cache" as "no data published"
+        # then marked every symbol in the chunk dead, wrote all of them to
+        # no_data.json, and `build_universe` excluded them from then on. One run
+        # before connecting an account was enough to blacklist the entire market
+        # permanently, and connecting one afterwards did not undo it.
+        #
+        # So the verdict is only recorded when the fetch actually ran.
+        got = sum(1 for sym in batch if sym in self.state._ohlc_cache)
+        fetch_ran = bool(stats.get("requested") or stats.get("cached") or got)
         before_dead = len(self.no_data)
-        for sym in batch:
-            if sym not in self.state._ohlc_cache:
-                self.no_data.add(sym)
+        if not fetch_ran:
+            self.last_error = ("no price data available — connect an Alpaca "
+                               "account under Accounts")
+            return {"scored": 0, "cursor": self.cursor, "size": len(self.universe),
+                    "blocked": self.last_error}
+        if got:
+            # And never on a wholesale miss. A batch of two hundred where not
+            # one symbol returned is an infrastructure failure, not two hundred
+            # delisted companies.
+            for sym in batch:
+                if sym not in self.state._ohlc_cache:
+                    self.no_data.add(sym)
 
         # Drop the untradable before paying to score them. This is the cheapest
         # possible filter and it runs on data already in hand.

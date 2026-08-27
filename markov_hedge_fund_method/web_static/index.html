@@ -2482,12 +2482,36 @@ function sweepNote(d){
   const cyc = sw.cycle>0 ? `${sw.cycle} full pass${sw.cycle===1?'':'es'} done` : 'first pass';
   return ` · full-market sweep ${pct}% through ${cyc} · ${sw.scanned} scored so far`;
 }
+function scanEmptyReason(d){
+  const sw = d.sweep;
+  if(d.universe === 'full' && sw){
+    if(sw.lastError){
+      return 'The market sweep cannot run: '+esc(sw.lastError)+
+        '<br><span class="muted">Everything is built from that sweep, so it stays '+
+        'empty until this clears.</span>';
+    }
+    if(!sw.boardSize){
+      return sw.running
+        ? 'The market sweep has not scored anything yet. It works in the gaps '+
+          'while you are not using the terminal, so give it a few minutes — or '+
+          'pick a sector, which is scored on demand.'
+        : 'The market sweep is not running, so <b>Everything</b> has nothing to '+
+          'show. Every other universe is scored on demand and works now.';
+    }
+  }
+  return 'No names match these filters — try widening the days, unticking a '+
+         'filter, or a different universe.';
+}
+
 function renderScan(d){
   LAST_SCAN=d;
   const list=$('scan-list');
   if(!d.results || !d.results.length){
-    list.innerHTML='<div class="scan-loading">No names match these filters — '+
-      'try widening the days, unticking a filter, or a different universe.</div>';
+    // "No names match these filters" is only true when something was actually
+    // scanned. On the full-market scope an empty board usually means the sweep
+    // has not scored anything yet — or cannot, for a reason worth naming —
+    // and blaming the filters sends the user to fix the wrong thing.
+    list.innerHTML = '<div class="scan-loading">'+scanEmptyReason(d)+'</div>';
     $('scan-foot').textContent = `Scanned ${d.scanned} symbols · 0 matched${sweepNote(d)} · ${d.disclaimer}`;
     return;
   }
