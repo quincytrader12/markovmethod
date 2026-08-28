@@ -189,6 +189,10 @@ class AppState:
         self._scan_cache: dict[str, tuple[float, list]] = {}
         self._ohlc_cache: dict[str, tuple[float, object, str]] = {}
         self._intraday_cache: dict[tuple[str, str], tuple[float, object, str]] = {}
+        # Tickets accepted recently, so an identical one arriving seconds later
+        # can be questioned rather than filled. See `duplicate_of`.
+        self._recent_orders: dict[tuple, float] = {}
+        self._meta_warming: set = set()
         self._state_vol_cache: dict[str, tuple[float, dict]] = {}
         self._state_meta_cache: dict[str, tuple[float, dict]] = {}
         self._heat_cache: dict[str, tuple[float, dict]] = {}
@@ -390,6 +394,39 @@ class AppState:
         self._intraday_cache[key] = (time.monotonic(), out[0], out[1])
         return out
 
+    # How long an identical ticket is treated as a probable double-click. Long
+    # enough to cover a slow submit and a second press; short enough that
+    # deliberately scaling into a position is not obstructed.
+    DUPLICATE_WINDOW = 15.0
+
+    @staticmethod
+    def _ticket_key(ticket) -> tuple:
+        g = lambda n: getattr(ticket, n, None)  # noqa: E731
+        return (str(g("symbol") or "").upper(), str(g("side") or "").lower(),
+                g("qty"), g("notional"), str(g("order_type") or ""),
+                g("limit_price"), g("stop_price"))
+
+    def duplicate_of(self, ticket) -> float | None:
+        """Seconds since an identical ticket was accepted, if one was.
+
+        The order path can take seconds on its first use of a symbol — the
+        meta-labelling forest runs cold — and during that silence a second press
+        of Submit is the natural thing to do. It produced a second real order.
+        Nothing on the client can be relied on for this: a reload, a second tab
+        or an impatient double-click all bypass a disabled button, and the money
+        has already moved by the time anyone notices.
+        """
+        key = self._ticket_key(ticket)
+        now = time.monotonic()
+        for k, at in list(self._recent_orders.items()):
+            if now - at > self.DUPLICATE_WINDOW:
+                del self._recent_orders[k]
+        seen = self._recent_orders.get(key)
+        return None if seen is None else (now - seen)
+
+    def remember_order(self, ticket) -> None:
+        self._recent_orders[self._ticket_key(ticket)] = time.monotonic()
+
     def pdt_check(self, ticket) -> dict | None:
         """Would this order be the day trade that flags the account?
 
@@ -523,6 +560,47 @@ class AppState:
         return bool(cfg.get("metaSizing", True))
 
     META_SIZE_TTL = 900.0
+
+    def meta_sizing_ready(self, symbol: str) -> dict | None:
+        """The forest's opinion if it is already known, otherwise None — and a
+        background computation started so the next order has it.
+
+        Training runs on a cache miss and takes seconds. On the order path that
+        is time the user spends looking at a button that appears not to have
+        worked, which is precisely how one intended purchase became three. The
+        sizing layer already fails open when it errors, so failing open when it
+        is merely slow is the same decision made for the same reason: an order
+        at the size actually typed is a far better outcome than a wait.
+        """
+        symbol = (symbol or "").strip().upper()
+        if not self.meta_sizing_enabled():
+            return {"symbol": symbol, "engaged": False, "multiplier": 1.0,
+                    "pWin": None, "threshold": None, "enabled": False,
+                    "reason": "meta sizing is switched off"}
+        cached = self._meta_size_cache.get(symbol)
+        if cached and (time.monotonic() - cached[0]) < self.META_SIZE_TTL:
+            return cached[1]
+        self.warm_meta_sizing(symbol)
+        return None
+
+    def warm_meta_sizing(self, symbol: str) -> None:
+        """Train the forest for a symbol off the request path."""
+        symbol = (symbol or "").strip().upper()
+        if not symbol or symbol in self._meta_warming:
+            return
+        self._meta_warming.add(symbol)
+
+        import threading as _t
+
+        def work():
+            try:
+                self.meta_sizing(symbol)
+            except Exception:  # noqa: BLE001 — a warm-up is never fatal
+                pass
+            finally:
+                self._meta_warming.discard(symbol)
+
+        _t.Thread(target=work, daemon=True, name=f"meta-warm-{symbol}").start()
 
     def meta_sizing(self, symbol: str) -> dict:
         """What the forest is allowed to do to an order for this symbol.
@@ -2084,6 +2162,17 @@ def create_app(state: AppState):
             raise HTTPException(status_code=400, detail="An order needs at least a symbol.")
         ticket = OrderTicket(**{k: v for k, v in data.items() if k in _ORDER_FIELDS})
 
+        # Checked first, and before anything slow, because the whole reason a
+        # duplicate arrives is that the slow part had not answered yet.
+        if not data.get("allowDuplicate"):
+            since = state.duplicate_of(ticket)
+            if since is not None:
+                raise HTTPException(status_code=409, detail=(
+                    f"An identical order for {ticket.symbol} was accepted "
+                    f"{since:.0f} seconds ago. If that was a double-click while "
+                    "the terminal was thinking, it is already placed — check the "
+                    "blotter. Send it again to place a second one deliberately."))
+
         # Meta-labelling applied to the live ticket. It can shrink the order or
         # refuse it; it can never enlarge it, and it never touches the side, the
         # symbol, or any price. An opening trade only — reducing an exit because
@@ -2092,7 +2181,10 @@ def create_app(state: AppState):
         sizing = None
         try:
             consult = state.meta_sizing_enabled() and not data.get("skipMetaSizing")
-            sizing = state.meta_sizing(ticket.symbol) if consult else None
+            # Ready-or-nothing. A cold forest warms in the background and the
+            # order goes at the size that was typed rather than waiting seconds
+            # for an opinion that may not change it at all.
+            sizing = state.meta_sizing_ready(ticket.symbol) if consult else None
         except Exception:  # noqa: BLE001
             # A sizing layer that breaks must not take the order down with it.
             # Failing open sends exactly what you typed, which is the same thing
@@ -2148,18 +2240,9 @@ def create_app(state: AppState):
                 f"{pdt_note['headline']}. {pdt_note['detail']} "
                 "Send it again with 'skipPdtGuard' to override."))
 
-        # Last look at the price the order will actually meet. The analysis feed
-        # is consolidated but delayed; the broker's quote is real-time and is
-        # the book this ticket lands in. Advisory only — a stale-looking limit
-        # is worth flagging, never worth blocking on.
-        quote = None
-        try:
-            quote = state.broker.latest_quote(ticket.symbol)
-        except Exception:  # noqa: BLE001
-            quote = None
-
         try:
             result = state.broker.submit_ticket(ticket)
+            state.remember_order(ticket)
         except OrderValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except ReadOnlyError as exc:
@@ -2178,7 +2261,22 @@ def create_app(state: AppState):
                 regime=state.journal_regime(ticket.symbol), source="order", notes=note)
         except Exception:  # noqa: BLE001
             pass
+        # The last look at the book, taken *after* the order rather than before
+        # it. It is reported with the fill and never blocks one, so asking first
+        # only added a round trip to the wait that caused the double-click.
+        quote = None
+        try:
+            quote = state.broker.latest_quote(ticket.symbol)
+        except Exception:  # noqa: BLE001
+            quote = None
+
         out = {"id": result.id, "status": result.status, "summary": result.summary}
+        if sizing is None and not data.get("skipMetaSizing") and state.meta_sizing_enabled():
+            # Said out loud: an order that skipped the sizing layer must not
+            # look like one the layer approved.
+            out["metaSizing"] = {"engaged": False, "multiplier": 1.0, "pending": True,
+                                 "reason": "sent at full size — the forest was still "
+                                           "training for this symbol"}
         if quote is not None:
             out["quote"] = quote
             drift = _limit_drift(ticket, quote)

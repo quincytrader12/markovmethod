@@ -416,6 +416,10 @@
   .kill-btn{background:rgba(255,77,94,.12); border:1px solid var(--red); color:var(--red); border-radius:4px;
     padding:8px 16px; cursor:pointer; font-family:inherit; font-size:12px; letter-spacing:1px; font-weight:700}
   .kill-btn:hover{background:var(--red); color:#0a0a0a}
+  /* Feedback the moment Submit is pressed. The gap between the click and the
+     fill is where a triple order came from. */
+  .act.sending{opacity:.65; cursor:progress; animation:pulse 1s infinite}
+  .act:disabled{cursor:not-allowed}
   .halt-banner{background:rgba(255,77,94,.14); border:1px solid var(--red); color:var(--red); border-radius:4px;
     padding:8px 12px; margin:4px 2px 10px; font-size:12px; display:flex; align-items:center; gap:10px}
   .ev-row{display:flex; gap:10px; padding:5px 4px; border-bottom:1px solid rgba(255,255,255,.045); font-size:11px}
@@ -1076,7 +1080,7 @@ function selectSymbol(s, addToWatch){
   markActive(s); $('o-symbol').value = s;
   VIEW = null;                               // a new series starts unzoomed
   META_OVERRIDE=false;                       // a new symbol is a new decision
-  PDT_OVERRIDE=false;
+  PDT_OVERRIDE=false; DUP_OVERRIDE=false;
   INTRADAY_CACHE.clear(); TPO_CACHE.clear(); TPO_DATA = null; RR = null;
   loadState(false); loadNews(); loadPortfolio(); refreshMetaSizing(); loadTiming();
   if(TPO_ON) loadTPO();
@@ -1766,6 +1770,7 @@ function numOrNull(id){ const v=$(id).value.trim(); return v===''?null:Number(v)
    discovered after the fact is a bug, not a feature. */
 let META_SIZE=null, META_OVERRIDE=false, META_SEQ=0;
 let PDT_OVERRIDE=false;   // armed only by an actual day-trade refusal
+let DUP_OVERRIDE=false;   // armed only by an actual duplicate refusal
 async function refreshMetaSizing(){
   const el=$('metasize'); if(!el) return;
   const sym=$('o-symbol').value.trim().toUpperCase();
@@ -1795,7 +1800,28 @@ function renderMetaSizing(){
 }
 function toggleMetaOverride(){ META_OVERRIDE=!META_OVERRIDE; renderMetaSizing(); }
 
+/* The click-to-feedback gap is what caused a triple order: the first submit for
+   a symbol can take seconds while the meta-labelling forest runs cold, and
+   nothing on screen said anything was happening. Pressing Submit again was the
+   reasonable response to a button that looked ignored. */
+let SUBMITTING = false;
+
 async function submitOrder(){
+  if(SUBMITTING) return;                 // a second press is not a second order
+  SUBMITTING = true;
+  const btn = $('btn-submit');
+  const label = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'SENDING…'; btn.classList.add('sending'); }
+  log('sending order…', 'dim');
+  try{
+    return await submitOrderInner();
+  }finally{
+    SUBMITTING = false;
+    if(btn){ btn.disabled = false; btn.textContent = label; btn.classList.remove('sending'); }
+  }
+}
+
+async function submitOrderInner(){
   const body={ symbol:$('o-symbol').value.trim().toUpperCase(), side:SIDE,
     order_type:$('o-type').value, time_in_force:$('o-tif').value, order_class:$('o-class').value,
     qty:numOrNull('o-qty'), notional:numOrNull('o-notional'), limit_price:numOrNull('o-limit'),
@@ -1804,6 +1830,7 @@ async function submitOrder(){
     lots:numOrNull('o-lots'), lot_size:(numOrNull('o-lotsize')||100) };
   if(META_OVERRIDE) body.skipMetaSizing=true;
   if(PDT_OVERRIDE) body.skipPdtGuard=true;
+  if(DUP_OVERRIDE) body.allowDuplicate=true;
   try{
     const r=await api('/api/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     log(`order sent ${r.summary} → <b>${r.id}</b> [${r.status}]`,'ok');
@@ -1821,11 +1848,18 @@ async function submitOrder(){
       log('limit '+fmt(r.priceCheck.limit,2)+' was through the book (mid '+
           fmt(r.priceCheck.mid,2)+') — filled at the touch','warn');
     }
-    META_OVERRIDE=false; PDT_OVERRIDE=false;
+    META_OVERRIDE=false; PDT_OVERRIDE=false; DUP_OVERRIDE=false;
     loadPortfolio(); refreshMetaSizing(); loadDayTrades();
   }catch(e){
-    // The day-trade refusal is the one rejection worth offering a way past, so
-    // it arms the override rather than just printing and losing the ticket.
+    // A refused duplicate is good news badly disguised: the order the user
+    // wanted is already placed. Say that, rather than reporting a rejection
+    // they will read as "nothing happened" and act on again.
+    if(/identical order/i.test(e.message||'')){
+      log(e.message, 'warn');
+      DUP_OVERRIDE = true;
+      loadPortfolio();
+      return;
+    }
     if(/day trade/i.test(e.message||'')){
       PDT_OVERRIDE=true;
       log('order held: '+e.message+' — press Submit again to send it anyway','err');

@@ -95,7 +95,16 @@ def _app(tmp_path, *, sizing, position=None, enabled=True):
     state.journal = JournalStore(config_dir=str(tmp_path))
     state.telegram = TelegramNotifier(config_dir=str(tmp_path))
     state.telegram.save(metaSizing=enabled)
+    # The order path asks for the verdict that is *already known* rather than
+    # computing one, because training on the request path took seconds and a
+    # button that looks ignored gets pressed again. So the stub has to be a
+    # ready verdict, not merely a computable one — which is what these tests
+    # meant all along.
     state.meta_sizing = lambda symbol: {**sizing, "symbol": symbol, "enabled": enabled}
+    state.meta_sizing_ready = lambda symbol: (
+        {**sizing, "symbol": symbol, "enabled": enabled} if enabled else
+        {"symbol": symbol, "engaged": False, "multiplier": 1.0, "pWin": None,
+         "threshold": None, "enabled": False, "reason": "meta sizing is switched off"})
     return state, TestClient(create_app(state))
 
 
@@ -238,6 +247,7 @@ def test_the_override_flag_never_reaches_the_broker(tmp_path):
 def test_a_sizing_failure_does_not_block_the_order(tmp_path):
     state, client = _app(tmp_path, sizing=IDLE)
     state.meta_sizing = lambda symbol: (_ for _ in ()).throw(RuntimeError("boom"))
+    state.meta_sizing_ready = lambda symbol: (_ for _ in ()).throw(RuntimeError("boom"))
     r = _order(client, qty=10)
     assert r.status_code == 500 or r.status_code == 200
     # Whatever happens, it must not silently send a *wrong* size.
