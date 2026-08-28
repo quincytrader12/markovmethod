@@ -205,3 +205,16 @@ def test_a_refused_duplicate_is_reported_as_good_news():
     html = _html()
     assert "identical order" in html
     assert "DUP_OVERRIDE" in html
+
+
+def test_the_kill_switch_clears_the_duplicate_memory():
+    """Flattening cancels every order and closes every position, so what was
+    placed a moment ago no longer describes anything that exists. An identical
+    ticket afterwards is a deliberate re-entry into an emptied book, not the
+    accidental second press this guard is for."""
+    c, b, _ = _client()
+    assert c.post("/api/orders", json=BODY).status_code == 200
+    c.post("/api/kill")
+    c.post("/api/kill/reset")
+    assert c.post("/api/orders", json=BODY).status_code == 200
+    assert len(b.placed) == 2

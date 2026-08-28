@@ -1834,6 +1834,12 @@ def create_app(state: AppState):
     @app.post("/api/kill")
     def kill_switch():
         event = state.alerts.trip_kill("manual kill switch")
+        # Flattening cancels every open order and closes every position, so the
+        # record of what was placed a moment ago no longer describes anything
+        # that exists. An identical ticket afterwards is a deliberate re-entry
+        # into a book that was just emptied, not the accidental second press the
+        # duplicate guard is there to catch.
+        state._recent_orders.clear()
         result = {"ok": True, "halted": True, "event": event, "flattened": None}
         if state.broker is not None:
             result["flattened"] = _flatten()
