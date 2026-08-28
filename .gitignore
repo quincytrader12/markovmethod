@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.hmm_available
+*.egg-info/
+uv.lock
+# generated artifacts
+scratch_*
+markov_proof.png
+*.svg
+# pyinstaller build outputs (the .spec under packaging/ IS tracked)
+/build/
+/dist/

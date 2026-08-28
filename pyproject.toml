@@ -1,0 +1,35 @@
+[project]
+name = "markov-hedge-fund-method"
+version = "0.1.0"
+description = "Observable Markov regime model with optional HMM layer"
+requires-python = "==3.12.*"
+dependencies = [
+    "yfinance>=0.2",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "scikit-learn>=1.4",
+]
+
+[project.optional-dependencies]
+hmm = ["hmmlearn>=0.3"]
+terminal = ["textual>=0.60", "alpaca-py>=0.20", "keyring>=24"]
+web = ["fastapi>=0.110", "uvicorn>=0.29", "alpaca-py>=0.20", "keyring>=24"]
+viz = ["matplotlib>=3.7"]
+build = ["pyinstaller>=6"]
+test = ["pytest>=7", "httpx>=0.27"]
+
+[project.scripts]
+mamba-terminal = "markov_hedge_fund_method.terminal:main"
+mamba-web = "markov_hedge_fund_method.web:main"
+markov-proof = "markov_hedge_fund_method.proof:main"
+
+[tool.setuptools.package-data]
+markov_hedge_fund_method = ["web_static/*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["markov_hedge_fund_method*"]

@@ -1,0 +1,57 @@
+name: build-windows-exe
+
+on:
+  push:
+    branches:
+      - main
+      - claude/markov-hedge-fund-install-ajdttg
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to attach the exe to a release on tag
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[terminal,web,build]"
+
+      - name: Build mamba-terminal.exe
+        run: pyinstaller --clean --noconfirm packaging/mamba-terminal.spec
+
+      - name: Smoke test the terminal executable
+        run: ./dist/mamba-terminal.exe --help
+
+      - name: Build mamba-web.exe (neon web HUD)
+        run: pyinstaller --clean --noconfirm packaging/mamba-web.spec
+
+      - name: Smoke test the web executable
+        run: ./dist/mamba-web.exe --selftest
+
+      - name: Upload exe artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mamba-terminal-windows
+          path: |
+            dist/mamba-terminal.exe
+            dist/mamba-web.exe
+          if-no-files-found: error
+
+      - name: Attach exes to release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/mamba-terminal.exe
+            dist/mamba-web.exe
